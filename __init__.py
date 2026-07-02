@@ -20,13 +20,13 @@ from bpy.types import AddonPreferences, Operator, SpaceNodeEditor
 from gpu_extras.batch import batch_for_shader
 
 
-ADDON_VERSION = "1.0.2"
+ADDON_VERSION = "1.0.3"
 
 
 bl_info = {
     "name": "Node Console",
     "author": "Anthem",
-    "version": (1, 0, 2),
+    "version": (1, 0, 3),
     "blender": (5, 1, 2),
     "location": "Node Editor > Shift A",
     "description": "Language-independent custom node launcher with favorite boosting.",
@@ -146,6 +146,9 @@ UI_TEXT_ZH = {
     "Console Width": "搜索窗口宽度",
     "Reset Width": "恢复默认宽度",
     "Reset Shortcut": "恢复默认快捷键",
+    "Repair Legacy Keymaps": "修复历史快捷键残留",
+    "Remove old Node Console keymap entries without touching other shortcuts": "只清理 Node Console 旧快捷键残留，不修改其他快捷键",
+    "Legacy Node Console keymaps cleaned": "已清理 Node Console 历史快捷键残留",
     "Shortcut conflict": "快捷键冲突",
     "Current shortcut temporarily overrides": "当前快捷键会临时覆盖",
     "Original shortcut restores after Node Console uses a non-conflicting shortcut.": "当 Node Console 改为不冲突的快捷键后，原快捷键会自动恢复。",
@@ -4170,6 +4173,9 @@ class ENS_AddNodeByEnglishSearch(Operator):
                     context.area.tag_redraw()
             return {"RUNNING_MODAL"}
 
+        if event.value == "PRESS" and (event.ctrl or event.oskey or event.alt):
+            return {"PASS_THROUGH"}
+
         if event.unicode and not event.ctrl and not event.alt and not event.oskey and event.type not in {"RET", "NUMPAD_ENTER", "ESC", "BACK_SPACE", "DEL"}:
             self._query += event.unicode
             self._selected_index = 0
@@ -4688,6 +4694,19 @@ class NODECONSOLE_OT_ResetShortcut(Operator):
         return {"FINISHED"}
 
 
+class NODECONSOLE_OT_RepairLegacyKeymaps(Operator):
+    bl_idname = "node_console.repair_legacy_keymaps"
+    bl_label = "Repair Legacy Keymaps"
+    bl_description = "Remove old Node Console keymap entries without touching other shortcuts"
+    bl_options = {"INTERNAL"}
+
+    def execute(self, _context):
+        removed = _remove_node_console_keymap_items()
+        register_keymap()
+        self.report({"INFO"}, f"{_ui_text('Legacy Node Console keymaps cleaned')}: {removed}")
+        return {"FINISHED"}
+
+
 class NODECONSOLE_OT_RemoveFavorite(Operator):
     bl_idname = "node_console.remove_favorite"
     bl_label = "Remove Favorite"
@@ -4918,6 +4937,7 @@ class ENS_AddonPreferences(AddonPreferences):
         row.prop(self, "shortcut_alt", text="Alt", toggle=True, translate=False)
         row.separator(factor=0.45)
         row.operator(NODECONSOLE_OT_ResetShortcut.bl_idname, icon="FILE_REFRESH", text="")
+        row.operator(NODECONSOLE_OT_RepairLegacyKeymaps.bl_idname, text=_ui_text("Repair Legacy Keymaps"))
         conflict_labels = _shortcut_conflict_labels()
         if conflict_labels:
             warning = box.box()
@@ -5002,6 +5022,7 @@ classes = (
     NODECONSOLE_OT_ResetConsoleWidth,
     NODECONSOLE_OT_ResetConsoleSize,
     NODECONSOLE_OT_ResetShortcut,
+    NODECONSOLE_OT_RepairLegacyKeymaps,
     NODECONSOLE_OT_RemoveFavorite,
     NODECONSOLE_OT_RemoveShortcut,
     NODECONSOLE_OT_MoveShortcut,
@@ -5047,11 +5068,18 @@ def _update_keyconfigs():
         pass
 
 
-def _node_console_user_keymaps(keyconfig):
-    for keymap_name in ("Node Editor", "Node Generic"):
-        keymap = keyconfig.keymaps.get(keymap_name)
-        if keymap:
-            yield keymap
+def _node_console_keymaps(keyconfig):
+    if not keyconfig:
+        return
+    for keymap in keyconfig.keymaps:
+        yield keymap
+
+
+def _node_console_keymap_idnames() -> set[str]:
+    return {
+        ENS_AddNodeByEnglishSearch.bl_idname,
+        "node_console.invoke_from_window",
+    }
 
 
 def _node_editor_keymaps(keyconfig):
@@ -5084,7 +5112,7 @@ def _keymap_item_label(item) -> str:
 
 def _keymap_item_matches_shortcut(item, key_type: str, shift: bool, ctrl: bool, alt: bool, oskey: bool) -> bool:
     return (
-        item.idname != ENS_AddNodeByEnglishSearch.bl_idname
+        item.idname not in _node_console_keymap_idnames()
         and item.type == key_type
         and item.value == "PRESS"
         and bool(item.shift) == bool(shift)
@@ -5125,36 +5153,37 @@ def _shortcut_conflict_labels() -> list[str]:
 
 
 def _cleanup_user_keymap_overrides():
+    removed = 0
     user_keyconfig = bpy.context.window_manager.keyconfigs.user
-    if not user_keyconfig:
-        return
-    for keymap in _node_console_user_keymaps(user_keyconfig):
+    for keymap in _node_console_keymaps(user_keyconfig):
         stale_items = [
             item
             for item in keymap.keymap_items
-            if item.idname == ENS_AddNodeByEnglishSearch.bl_idname
+            if item.idname in _node_console_keymap_idnames()
         ]
         for item in stale_items:
             try:
                 keymap.keymap_items.remove(item)
+                removed += 1
             except Exception:
                 pass
+    return removed
 
 
 def _remove_node_console_keymap_items():
+    removed = 0
     keyconfig = bpy.context.window_manager.keyconfigs.addon
-    if keyconfig:
-        for keymap_name in ("Node Editor", "Node Generic"):
-            keymap = keyconfig.keymaps.get(keymap_name)
-            if not keymap:
-                continue
-            stale_items = [item for item in keymap.keymap_items if item.idname == ENS_AddNodeByEnglishSearch.bl_idname]
-            for item in stale_items:
-                try:
-                    keymap.keymap_items.remove(item)
-                except Exception:
-                    pass
-    _cleanup_user_keymap_overrides()
+    for keymap in _node_console_keymaps(keyconfig):
+        stale_items = [item for item in keymap.keymap_items if item.idname in _node_console_keymap_idnames()]
+        for item in stale_items:
+            try:
+                keymap.keymap_items.remove(item)
+                removed += 1
+            except Exception:
+                pass
+    removed += _cleanup_user_keymap_overrides()
+    _update_keyconfigs()
+    return removed
 
 
 def register_keymap():
