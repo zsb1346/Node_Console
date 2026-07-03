@@ -4,13 +4,13 @@
 
 
 ![Blender](https://img.shields.io/badge/Blender-5.1.2-f5792a?logo=blender&logoColor=white)
-![Version](https://img.shields.io/badge/version-1.0.5-blue)
+![Version](https://img.shields.io/badge/version-1.1.0-blue)
 ![Category](https://img.shields.io/badge/category-Node%20Editor-555)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 
 作者：Anthem  
-版本：1.0.5
+版本：1.1.0
 
 ## 中文
 
@@ -29,7 +29,7 @@ Node Console 将拼音搜索作为主要中文检索方式。你可以直接输�
 
 ### 安装
 
-1. 从 release assets 下载 `Node_Console_1.0.5.zip`。
+1. 从 release assets 下载 `Node_Console_1.1.0.zip`。
 2. 在 Blender 中打开 `编辑 > 偏好设置 > 插件`。
 3. 点击 `安装...`，选择下载的 zip 文件。
 4. 启用 `Node Console`。
@@ -78,7 +78,7 @@ Node Console treats pinyin as the primary way to search Chinese node names. You 
 
 ### Install
 
-1. Download `Node_Console_1.0.5.zip` from the release assets.
+1. Download `Node_Console_1.1.0.zip` from the release assets.
 2. In Blender, open `Edit > Preferences > Add-ons`.
 3. Click `Install...`, then choose the downloaded zip file.
 4. Enable `Node Console`.

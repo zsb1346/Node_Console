@@ -20,13 +20,13 @@ from bpy.types import AddonPreferences, Operator, SpaceNodeEditor
 from gpu_extras.batch import batch_for_shader
 
 
-ADDON_VERSION = "1.0.5"
+ADDON_VERSION = "1.1.0"
 
 
 bl_info = {
     "name": "Node Console",
     "author": "Anthem",
-    "version": (1, 0, 5),
+    "version": (1, 1, 0),
     "blender": (5, 1, 2),
     "location": "Node Editor > Shift A",
     "description": "Language-independent custom node launcher with favorite boosting.",
@@ -41,6 +41,7 @@ NODE_CONSOLE_KEYMAP_SPACE_TYPE = "NODE_EDITOR"
 NODE_CONSOLE_LEGACY_KEYMAP_IDNAMES = {"node_console.invoke_from_window"}
 KEYMAP_REFRESH_PENDING = False
 NODE_SEARCH_ENTRIES: list["NodeSearchEntry"] = []
+SNIPPET_ENTRY_BY_ID: dict[str, dict] = {}
 ACTIVE_CONSOLE_OPERATOR = None
 MENU_ENTRY_CACHE: dict[str, list[tuple[str, str, str, str, tuple[tuple[str, str], ...]]]] = {}
 SEARCH_INDEX_MEMORY_KEYS: set[str] = set()
@@ -126,7 +127,62 @@ NODE_TREE_GROUPS = (
     ("", "Uncategorized"),
 )
 SETTINGS_FILENAME = "node_console_settings.json"
+SNIPPETS_FILENAME = "node_console_snippets.json"
 BUNDLED_CACHE_FILENAME = "node_console_builtin_cache.json"
+SNIPPET_SCHEMA_VERSION = 1
+
+SNIPPET_CATEGORY_ITEMS = (
+    ("INPUT", "Input", "Input-style snippets"),
+    ("OUTPUT", "Output", "Output-style snippets"),
+    ("GEOMETRY", "Geometry", "Geometry snippets"),
+    ("SHADER", "Shader", "Shader snippets"),
+    ("COLOR", "Color", "Color snippets"),
+    ("CONVERTER", "Converter", "Converter snippets"),
+    ("VECTOR", "Vector", "Vector snippets"),
+    ("TEXTURE", "Texture", "Texture snippets"),
+    ("FILTER", "Filter", "Filter snippets"),
+    ("MASK", "Mask", "Mask snippets"),
+    ("DISTORT", "Distort", "Distort snippets"),
+    ("UTILITY", "Utility", "Utility snippets"),
+    ("LAYOUT", "Layout", "Layout snippets"),
+    ("NONE", "None", "Uncategorized snippets"),
+)
+SNIPPET_CATEGORY_ITEMS_BY_TREE = {
+    "GeometryNodeTree": (
+        ("INPUT", "Input", "Input-style snippets"),
+        ("OUTPUT", "Output", "Output-style snippets"),
+        ("GEOMETRY", "Geometry", "Geometry snippets"),
+        ("CONVERTER", "Converter", "Converter snippets"),
+        ("VECTOR", "Vector", "Vector snippets"),
+        ("TEXTURE", "Texture", "Texture snippets"),
+        ("UTILITY", "Utility", "Utility snippets"),
+        ("LAYOUT", "Layout", "Layout snippets"),
+        ("NONE", "None", "Uncategorized snippets"),
+    ),
+    "ShaderNodeTree": (
+        ("INPUT", "Input", "Input-style snippets"),
+        ("OUTPUT", "Output", "Output-style snippets"),
+        ("SHADER", "Shader", "Shader snippets"),
+        ("COLOR", "Color", "Color snippets"),
+        ("CONVERTER", "Converter", "Converter snippets"),
+        ("VECTOR", "Vector", "Vector snippets"),
+        ("TEXTURE", "Texture", "Texture snippets"),
+        ("LAYOUT", "Layout", "Layout snippets"),
+        ("NONE", "None", "Uncategorized snippets"),
+    ),
+    "CompositorNodeTree": (
+        ("INPUT", "Input", "Input-style snippets"),
+        ("OUTPUT", "Output", "Output-style snippets"),
+        ("COLOR", "Color", "Color snippets"),
+        ("CONVERTER", "Converter", "Converter snippets"),
+        ("FILTER", "Filter", "Filter snippets"),
+        ("MASK", "Mask", "Mask snippets"),
+        ("DISTORT", "Distort", "Distort snippets"),
+        ("UTILITY", "Utility", "Utility snippets"),
+        ("LAYOUT", "Layout", "Layout snippets"),
+        ("NONE", "None", "Uncategorized snippets"),
+    ),
+}
 
 UI_TEXT_ZH = {
     "Search nodes...": "搜索节点...",
@@ -161,6 +217,41 @@ UI_TEXT_ZH = {
     "Shader Nodes": "材质节点",
     "Compositor Nodes": "合成节点",
     "Uncategorized": "未分类",
+    "Name": "名称",
+    "Category": "类目",
+    "Snippet Node": "组合点",
+    "Snippet Nodes": "组合点",
+    "No snippet nodes": "没有组合点",
+    "Save Snippet Node": "保存组合点",
+    "Remove Snippet Node": "删除组合点",
+    "Snippet Node Name": "组合点名称",
+    "Snippet Node Category": "组合点类目",
+    "nodes": "节点",
+    "links": "连线",
+    "Open Search Shortcut": "打开搜索快捷键",
+    "Save Snippet Node Shortcut": "保存组合点快捷键",
+    "Snippet Library File": "组合点库文件",
+    "Snippet Libraries": "组合点库",
+    "Default Library": "默认库",
+    "Active": "启用",
+    "Name is required": "必须输入名称",
+    "Select nodes to save as a snippet": "请选择要保存为组合点的节点",
+    "This snippet already exists": "这个组合点已经保存过",
+    "Existing snippet": "已有组合点",
+    "Input": "输入",
+    "Output": "输出",
+    "Geometry": "几何",
+    "Shader": "着色器",
+    "Color": "颜色",
+    "Converter": "转换器",
+    "Vector": "矢量",
+    "Texture": "纹理",
+    "Filter": "滤镜",
+    "Mask": "蒙版",
+    "Distort": "畸变",
+    "Utility": "实用工具",
+    "Layout": "布局",
+    "None": "无",
 }
 
 TRANSLATIONS = {
@@ -171,6 +262,9 @@ TRANSLATIONS = {
         ("*", "Show a slim category color line at the left edge"): "在左侧显示一条类目颜色竖线",
         ("*", "Show colored category backgrounds"): "显示类目颜色底块",
         ("*", "Hide category color decorations"): "关闭类目颜色装饰",
+        ("*", "Save Snippet Node"): "保存组合点",
+        ("*", "Snippet Node Name"): "组合点名称",
+        ("*", "Snippet Node Category"): "组合点类目",
     },
     "zh_CN": {
         ("*", "Color Line"): "颜色竖线",
@@ -179,6 +273,9 @@ TRANSLATIONS = {
         ("*", "Show a slim category color line at the left edge"): "在左侧显示一条类目颜色竖线",
         ("*", "Show colored category backgrounds"): "显示类目颜色底块",
         ("*", "Hide category color decorations"): "关闭类目颜色装饰",
+        ("*", "Save Snippet Node"): "保存组合点",
+        ("*", "Snippet Node Name"): "组合点名称",
+        ("*", "Snippet Node Category"): "组合点类目",
     },
 }
 
@@ -1043,6 +1140,18 @@ def _settings_path() -> Path:
     return Path(config_dir) / SETTINGS_FILENAME
 
 
+def _snippets_path() -> Path:
+    prefs = _preferences()
+    custom_path = getattr(prefs, "snippet_library_path", "") if prefs else ""
+    if isinstance(custom_path, str) and custom_path.strip():
+        return Path(bpy.path.abspath(custom_path.strip()))
+    try:
+        config_dir = bpy.utils.user_resource("CONFIG", path="", create=True)
+    except Exception:
+        config_dir = str(Path.home())
+    return Path(config_dir) / SNIPPETS_FILENAME
+
+
 def _load_settings() -> dict:
     path = _settings_path()
     if not path.exists():
@@ -1065,6 +1174,45 @@ def _write_settings(data: dict):
         pass
 
 
+def _load_snippet_store() -> dict:
+    path = _snippets_path()
+    if not path.exists():
+        return {"version": SNIPPET_SCHEMA_VERSION, "snippets": []}
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"version": SNIPPET_SCHEMA_VERSION, "snippets": []}
+
+    if not isinstance(data, dict):
+        return {"version": SNIPPET_SCHEMA_VERSION, "snippets": []}
+    snippets = data.get("snippets", [])
+    if not isinstance(snippets, list):
+        snippets = []
+    return {"version": int(data.get("version", SNIPPET_SCHEMA_VERSION) or SNIPPET_SCHEMA_VERSION), "snippets": [item for item in snippets if isinstance(item, dict)]}
+
+
+def _save_snippet_store(data: dict):
+    payload = {
+        "version": SNIPPET_SCHEMA_VERSION,
+        "snippets": data.get("snippets", []) if isinstance(data.get("snippets", []), list) else [],
+    }
+    path = _snippets_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _load_snippets() -> list[dict]:
+    return _load_snippet_store().get("snippets", [])
+
+
+def _save_snippets(snippets: list[dict]):
+    _save_snippet_store({"snippets": snippets})
+
+
 def _save_preference_settings():
     prefs = _preferences()
     if not prefs:
@@ -1081,9 +1229,16 @@ def _save_preference_settings():
             "shortcut_ctrl": prefs.shortcut_ctrl,
             "shortcut_alt": prefs.shortcut_alt,
             "shortcut_oskey": prefs.shortcut_oskey,
+            "snippet_shortcut_key": prefs.snippet_shortcut_key,
+            "snippet_shortcut_shift": prefs.snippet_shortcut_shift,
+            "snippet_shortcut_ctrl": prefs.snippet_shortcut_ctrl,
+            "snippet_shortcut_alt": prefs.snippet_shortcut_alt,
+            "snippet_shortcut_oskey": prefs.snippet_shortcut_oskey,
             "scan_asset_libraries": prefs.scan_asset_libraries,
             "category_color_mode": prefs.category_color_mode,
             "console_width": prefs.console_width,
+            "snippet_library_path": prefs.snippet_library_path,
+            "snippet_nodes_expanded": prefs.snippet_nodes_expanded,
             "settings_version": 2,
         }
     )
@@ -1102,7 +1257,7 @@ def _load_preferences_from_settings():
         _write_settings(data)
     if "category_color_mode" not in data and "show_category_color_tags" in data:
         data["category_color_mode"] = "BLOCK" if data.get("show_category_color_tags") else "OFF"
-    for name in ("display_mode", "chinese_fuzzy_match", "ui_scale", "shortcut_key", "shortcut_shift", "shortcut_ctrl", "shortcut_alt", "shortcut_oskey", "scan_asset_libraries", "category_color_mode", "console_width"):
+    for name in ("display_mode", "chinese_fuzzy_match", "ui_scale", "shortcut_key", "shortcut_shift", "shortcut_ctrl", "shortcut_alt", "shortcut_oskey", "snippet_shortcut_key", "snippet_shortcut_shift", "snippet_shortcut_ctrl", "snippet_shortcut_alt", "snippet_shortcut_oskey", "scan_asset_libraries", "category_color_mode", "console_width", "snippet_library_path", "snippet_nodes_expanded"):
         if name in data:
             try:
                 setattr(prefs, name, data[name])
@@ -1232,6 +1387,9 @@ def _identifier_trees(identifier: str, tree_meta: dict[str, set[str]]) -> set[st
     trees = tree_meta.get(identifier)
     if trees:
         return set(trees)
+    snippet_tree = _snippet_tree_for_identifier(identifier)
+    if snippet_tree:
+        return {snippet_tree}
     inferred = _infer_identifier_tree(identifier)
     return {inferred} if inferred else {""}
 
@@ -1317,6 +1475,536 @@ def _save_asset_index(entries: list[dict]):
 def _node_tree_id(context) -> str:
     tree = getattr(getattr(context, "space_data", None), "edit_tree", None)
     return getattr(tree, "bl_idname", "") or "NodeTree"
+
+
+def _snippet_category_label(category: str) -> str:
+    category = "NONE" if str(category or "").upper() == "CUSTOM" else str(category or "NONE")
+    label = next((item[1] for item in SNIPPET_CATEGORY_ITEMS if item[0] == category), category.title())
+    return _ui_text(label)
+
+
+def _snippet_category_color_type(category: str) -> str:
+    category = "NONE" if str(category or "").upper() == "CUSTOM" else str(category or "NONE")
+    mapping = {
+        "INPUT": "input",
+        "OUTPUT": "output",
+        "GEOMETRY": "geometry",
+        "SHADER": "geometry",
+        "COLOR": "color",
+        "CONVERTER": "converter",
+        "VECTOR": "vector",
+        "TEXTURE": "texture",
+        "FILTER": "compositor_filter",
+        "MASK": "compositor_mask",
+        "DISTORT": "compositor_distort",
+        "UTILITY": "converter",
+        "LAYOUT": "output",
+        "NONE": "none",
+    }
+    return mapping.get(category, "none")
+
+
+def _snippet_category_for_node(node, tree_id: str = "") -> str:
+    bl_idname = getattr(node, "bl_idname", "")
+    node_type = getattr(node, "type", "")
+    name_text = _normalize(" ".join([bl_idname, node_type, getattr(node, "label", ""), getattr(node, "name", "")]))
+    if bl_idname in {"NodeGroupInput"}:
+        return "INPUT"
+    if bl_idname in {"NodeGroupOutput"}:
+        return "OUTPUT"
+    if "output" in name_text:
+        return "OUTPUT"
+    if "input" in name_text:
+        return "INPUT"
+    if tree_id == "ShaderNodeTree":
+        if "tex" in bl_idname.lower() or "texture" in name_text:
+            return "TEXTURE"
+        if "vector" in name_text or "normal" in name_text or "mapping" in name_text:
+            return "VECTOR"
+        if "mix" in name_text or "color" in name_text or "rgb" in name_text:
+            return "COLOR"
+        if "math" in name_text or "converter" in name_text or "blackbody" in name_text or "wavelength" in name_text:
+            return "CONVERTER"
+        if bl_idname.startswith("ShaderNode"):
+            return "SHADER"
+    if tree_id == "CompositorNodeTree":
+        if any(word in name_text for word in ("filter", "blur", "glare", "sharpen", "tone")):
+            return "FILTER"
+        if any(word in name_text for word in ("mask", "matte", "key")):
+            return "MASK"
+        if any(word in name_text for word in ("distort", "lens", "aberration", "flip", "rotate", "scale", "transform")):
+            return "DISTORT"
+        if any(word in name_text for word in ("color", "rgb", "hue", "saturation")):
+            return "COLOR"
+        if any(word in name_text for word in ("convert", "math", "normalize", "blackbody", "alpha")):
+            return "CONVERTER"
+    if bl_idname.startswith("FunctionNode") or "math" in name_text or "converter" in name_text:
+        return "CONVERTER"
+    if "vector" in name_text or "rotation" in name_text:
+        return "VECTOR"
+    if "texture" in name_text:
+        return "TEXTURE"
+    if bl_idname.startswith("GeometryNode"):
+        return "GEOMETRY"
+    return "NONE"
+
+
+def _snippet_tree_for_identifier(identifier: str) -> str:
+    if not isinstance(identifier, str) or not identifier.startswith("snippet:"):
+        return ""
+    snippet_id = identifier.split(":", 1)[1]
+    for snippet in _load_snippets():
+        if snippet.get("id") == snippet_id:
+            return str(snippet.get("tree_type", ""))
+    return ""
+
+
+def _snippet_node_color() -> tuple[float, float, float, float]:
+    return (0.46, 0.46, 0.48, 1.0)
+
+
+def _current_edit_tree(context):
+    space = getattr(context, "space_data", None)
+    return getattr(space, "edit_tree", None) or getattr(space, "node_tree", None)
+
+
+def _snippet_category_items_for_tree(tree_id: str):
+    return SNIPPET_CATEGORY_ITEMS_BY_TREE.get(tree_id, SNIPPET_CATEGORY_ITEMS)
+
+
+def _coerce_snippet_category_for_tree(category: str, tree_id: str) -> str:
+    category = "NONE" if str(category or "").upper() == "CUSTOM" else str(category or "NONE")
+    valid = {item[0] for item in _snippet_category_items_for_tree(tree_id)}
+    return category if category in valid else "NONE"
+
+
+def _snippet_category_enum_items(_self, context):
+    return _snippet_category_items_for_tree(_node_tree_id(context))
+
+
+def _jsonable_value(value):
+    if isinstance(value, (str, bool, int, float)) or value is None:
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_jsonable_value(item) for item in value]
+    try:
+        return list(value)
+    except Exception:
+        return str(value)
+
+
+def _set_socket_default(socket, value):
+    if not hasattr(socket, "default_value"):
+        return
+    try:
+        current = socket.default_value
+        if isinstance(current, (int, float, bool, str)):
+            socket.default_value = value
+        else:
+            socket.default_value = value
+    except Exception:
+        pass
+
+
+def _node_parent_chain_contains(node, frame) -> bool:
+    parent = getattr(node, "parent", None)
+    while parent:
+        if parent == frame:
+            return True
+        parent = getattr(parent, "parent", None)
+    return False
+
+
+def _nodes_inside_frame(tree, frame) -> set:
+    return {node for node in tree.nodes if node == frame or _node_parent_chain_contains(node, frame)}
+
+
+def _selected_snippet_seed_nodes(tree) -> tuple[set, list]:
+    selected = [node for node in tree.nodes if getattr(node, "select", False)]
+    selected_frames = [node for node in selected if getattr(node, "type", "") == "FRAME" or getattr(node, "bl_idname", "") == "NodeFrame"]
+    if not selected:
+        return set(), []
+
+    included = set()
+    top_units = []
+    for frame in selected_frames:
+        included.update(_nodes_inside_frame(tree, frame))
+        top_units.append(frame)
+    for node in selected:
+        if node in included:
+            continue
+        included.add(node)
+        top_units.append(node)
+    return included, top_units
+
+
+def _top_units_need_outer_frame(top_units: list) -> bool:
+    if len(top_units) != 1:
+        return True
+    unit = top_units[0]
+    return not (getattr(unit, "type", "") == "FRAME" or getattr(unit, "bl_idname", "") == "NodeFrame")
+
+
+def _ensure_snippet_frame(tree, title: str) -> tuple[set, object | None]:
+    included, top_units = _selected_snippet_seed_nodes(tree)
+    if not included:
+        return set(), None
+
+    if not _top_units_need_outer_frame(top_units):
+        frame = top_units[0]
+        if title:
+            frame.label = title
+        included.update(_nodes_inside_frame(tree, frame))
+        return included, frame
+
+    frame = tree.nodes.new(type="NodeFrame")
+    frame.label = title
+    frame.name = title or frame.name
+    if top_units:
+        min_x = min(float(node.location.x) for node in top_units)
+        max_y = max(float(node.location.y) for node in top_units)
+        frame.location = (min_x - 40, max_y + 60)
+    for node in top_units:
+        if node != frame:
+            node.parent = frame
+    included.add(frame)
+    return included, frame
+
+
+def _snippet_default_category(tree, nodes: set, tree_id: str) -> str:
+    if not nodes:
+        return "NONE"
+    internal_links = [link for link in tree.links if link.from_node in nodes and link.to_node in nodes]
+    if not internal_links:
+        return "NONE"
+    from_nodes = {link.from_node for link in internal_links}
+    terminal_links = [link for link in internal_links if link.to_node not in from_nodes] or internal_links
+    terminal_links.sort(key=lambda link: (float(link.to_node.location.x), -float(link.to_node.location.y)))
+    return _snippet_category_for_node(terminal_links[-1].to_node, tree_id)
+
+
+def _collect_node_properties(node) -> dict:
+    skip = {
+        "name", "label", "location", "select", "parent", "width", "height", "dimensions",
+        "hide", "mute", "show_options", "show_preview", "color", "use_custom_color",
+        "rna_type", "type", "bl_idname", "inputs", "outputs", "internal_links",
+    }
+    props = {}
+    for prop in getattr(node.bl_rna, "properties", []):
+        identifier = getattr(prop, "identifier", "")
+        if not identifier or identifier in skip or getattr(prop, "is_readonly", False):
+            continue
+        try:
+            value = getattr(node, identifier)
+        except Exception:
+            continue
+        if hasattr(value, "bl_rna"):
+            continue
+        if isinstance(value, (str, bool, int, float)) or value is None or isinstance(value, (tuple, list)):
+            props[identifier] = _jsonable_value(value)
+    return props
+
+
+def _apply_node_properties(node, props: dict):
+    for name, value in (props or {}).items():
+        try:
+            setattr(node, name, value)
+        except Exception:
+            pass
+
+
+def _socket_defaults(sockets) -> list:
+    values = []
+    for index, socket in enumerate(sockets):
+        if not hasattr(socket, "default_value"):
+            continue
+        try:
+            values.append({"index": index, "identifier": getattr(socket, "identifier", ""), "name": getattr(socket, "name", ""), "value": _jsonable_value(socket.default_value)})
+        except Exception:
+            pass
+    return values
+
+
+def _apply_socket_defaults(sockets, values: list):
+    for item in values or []:
+        socket = None
+        identifier = item.get("identifier", "")
+        if identifier:
+            socket = next((candidate for candidate in sockets if getattr(candidate, "identifier", "") == identifier), None)
+        if socket is None:
+            index = item.get("index")
+            if isinstance(index, int) and 0 <= index < len(sockets):
+                socket = sockets[index]
+        if socket is not None:
+            _set_socket_default(socket, item.get("value"))
+
+
+def _socket_index(sockets, socket) -> int:
+    for index, candidate in enumerate(sockets):
+        if candidate == socket:
+            return index
+    return -1
+
+
+def _socket_lookup(sockets, item: dict):
+    identifier = item.get("identifier", "")
+    if identifier:
+        found = next((socket for socket in sockets if getattr(socket, "identifier", "") == identifier), None)
+        if found:
+            return found
+    index = item.get("index")
+    if isinstance(index, int) and 0 <= index < len(sockets):
+        return sockets[index]
+    name = item.get("name", "")
+    if name:
+        return next((socket for socket in sockets if getattr(socket, "name", "") == name), None)
+    return None
+
+
+def _serialize_snippet_nodes(tree, nodes: set, root_frame) -> dict:
+    ordered = sorted(nodes, key=lambda node: (0 if node == root_frame else 1, float(node.location.x), -float(node.location.y), getattr(node, "name", "")))
+    index_by_node = {node: index for index, node in enumerate(ordered)}
+    origin_x = float(getattr(root_frame, "location", (0, 0))[0]) if root_frame else min(float(node.location.x) for node in ordered)
+    origin_y = float(getattr(root_frame, "location", (0, 0))[1]) if root_frame else max(float(node.location.y) for node in ordered)
+    node_items = []
+    for node in ordered:
+        parent = getattr(node, "parent", None)
+        parent_index = index_by_node.get(parent, -1)
+        node_tree = getattr(node, "node_tree", None)
+        if parent_index >= 0:
+            node_location = [float(node.location.x), float(node.location.y)]
+        else:
+            node_location = [float(node.location.x) - origin_x, float(node.location.y) - origin_y]
+        node_items.append({
+            "bl_idname": getattr(node, "bl_idname", ""),
+            "type": getattr(node, "type", ""),
+            "label": getattr(node, "label", ""),
+            "name": getattr(node, "name", ""),
+            "parent": parent_index,
+            "location": node_location,
+            "width": float(getattr(node, "width", 0.0) or 0.0),
+            "height": float(getattr(node, "height", 0.0) or 0.0),
+            "props": _collect_node_properties(node),
+            "input_defaults": _socket_defaults(getattr(node, "inputs", [])),
+            "output_defaults": _socket_defaults(getattr(node, "outputs", [])),
+            "node_tree": getattr(node_tree, "name", "") if node_tree else "",
+        })
+    link_items = []
+    for link in tree.links:
+        if link.from_node not in index_by_node or link.to_node not in index_by_node:
+            continue
+        link_items.append({
+            "from_node": index_by_node[link.from_node],
+            "from_socket": {
+                "index": _socket_index(link.from_node.outputs, link.from_socket),
+                "identifier": getattr(link.from_socket, "identifier", ""),
+                "name": getattr(link.from_socket, "name", ""),
+            },
+            "to_node": index_by_node[link.to_node],
+            "to_socket": {
+                "index": _socket_index(link.to_node.inputs, link.to_socket),
+                "identifier": getattr(link.to_socket, "identifier", ""),
+                "name": getattr(link.to_socket, "name", ""),
+            },
+        })
+    return {"nodes": node_items, "links": link_items}
+
+
+def _canonical_snippet_payload(payload: dict) -> dict:
+    nodes = []
+    for item in payload.get("nodes", []):
+        nodes.append({
+            "bl_idname": item.get("bl_idname", ""),
+            "type": item.get("type", ""),
+            "parent": item.get("parent", -1),
+            "props": item.get("props", {}),
+            "input_defaults": item.get("input_defaults", []),
+            "output_defaults": item.get("output_defaults", []),
+            "node_tree": item.get("node_tree", ""),
+        })
+    return {"nodes": nodes, "links": payload.get("links", [])}
+
+
+def _snippet_content_hash(payload: dict) -> str:
+    canonical = _canonical_snippet_payload(payload)
+    text = json.dumps(canonical, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _snippet_identifier() -> str:
+    return f"snippet_{int(time.time() * 1000)}_{hashlib.sha1(str(time.monotonic()).encode()).hexdigest()[:8]}"
+
+
+def _snippet_to_entry(snippet: dict) -> NodeSearchEntry:
+    name = str(snippet.get("name", "") or "Snippet Node")
+    category = str(snippet.get("category", "NONE") or "NONE")
+    if category == "CUSTOM":
+        category = "NONE"
+    category_label = _snippet_category_label(category)
+    english_category = f"Snippet Node > {next((item[1] for item in SNIPPET_CATEGORY_ITEMS if item[0] == category), category.title())}"
+    chinese_category = f"{_ui_text('Snippet Node')} > {category_label}"
+    identifier = f"snippet:{snippet.get('id', '')}"
+    search_text = " ".join([
+        _normalize(name),
+        _normalize(category_label),
+        _normalize(english_category),
+        _pinyin_search_text(name),
+        _pinyin_search_text(category_label),
+    ])
+    return NodeSearchEntry(
+        identifier=identifier,
+        category=english_category,
+        english=f"{english_category} > {name}",
+        chinese=f"{chinese_category} > {name}",
+        label=name,
+        description=str(snippet.get("description", "")),
+        kind="SNIPPET",
+        node_type=f"Snippet:{_snippet_category_color_type(category)}",
+        search_text=_normalize(search_text),
+    )
+
+
+def _snippets_for_tree(tree_id: str) -> list[dict]:
+    return [item for item in _load_snippets() if item.get("tree_type") == tree_id]
+
+
+def _search_snippets(query: str, tree_id: str, favorites: set[str]) -> list[NodeSearchEntry]:
+    global SNIPPET_ENTRY_BY_ID
+    SNIPPET_ENTRY_BY_ID = {}
+    entries = []
+    for snippet in _snippets_for_tree(tree_id):
+        entry = _snippet_to_entry(snippet)
+        SNIPPET_ENTRY_BY_ID[entry.identifier] = snippet
+        entries.append(entry)
+    entries.sort(key=lambda entry: (entry.identifier not in favorites, entry.label.lower()))
+    if not _normalize(query):
+        return entries
+    return _search_entries_from_list(entries, query, favorites)
+
+
+def _search_entries_from_list(entries: list[NodeSearchEntry], query: str, favorites: set[str] | None = None) -> list[NodeSearchEntry]:
+    favorites = favorites or set()
+    scored = []
+    normalized_query = _normalize(query)
+    compact_query = normalized_query.replace(" ", "")
+    for index, entry in enumerate(entries):
+        text = entry.search_text or _normalize(" ".join([entry.english, entry.chinese, entry.label]))
+        compact_text = text.replace(" ", "")
+        score = None
+        if normalized_query in text:
+            score = 120
+        elif compact_query and compact_query in compact_text:
+            score = 100
+        elif _ordered_chars_match(compact_query, compact_text):
+            score = 60
+        if score is None:
+            continue
+        label = _normalize(entry.label)
+        if label.startswith(normalized_query):
+            score += 400
+        elif normalized_query in label:
+            score += 180
+        if entry.identifier in favorites:
+            score += 260
+        scored.append((entry.identifier not in favorites, -score, index, entry))
+    scored.sort(key=lambda item: (item[0], item[1]))
+    return [item[-1] for item in scored]
+
+
+def _insert_snippet(context, entry: NodeSearchEntry):
+    snippet = SNIPPET_ENTRY_BY_ID.get(entry.identifier)
+    if not snippet:
+        return None
+    tree = _current_edit_tree(context)
+    space = getattr(context, "space_data", None)
+    if not tree or not space:
+        return None
+    payload = snippet.get("payload", {})
+    node_items = payload.get("nodes", [])
+    link_items = payload.get("links", [])
+    if not node_items:
+        return None
+
+    for node in tree.nodes:
+        node.select = False
+
+    created = []
+    cursor = getattr(space, "cursor_location", None)
+    cursor_x = float(cursor.x) if cursor else 0.0
+    cursor_y = float(cursor.y) if cursor else 0.0
+    for item in node_items:
+        bl_idname = item.get("bl_idname", "")
+        try:
+            node = tree.nodes.new(type=bl_idname)
+        except Exception:
+            created.append(None)
+            continue
+        node.label = item.get("label", "")
+        _apply_node_properties(node, item.get("props", {}))
+        node_tree_name = item.get("node_tree", "")
+        if node_tree_name and hasattr(node, "node_tree"):
+            node_group = bpy.data.node_groups.get(node_tree_name)
+            if node_group:
+                try:
+                    node.node_tree = node_group
+                except Exception:
+                    pass
+        if item.get("width"):
+            try:
+                node.width = float(item.get("width"))
+            except Exception:
+                pass
+        _apply_socket_defaults(getattr(node, "inputs", []), item.get("input_defaults", []))
+        _apply_socket_defaults(getattr(node, "outputs", []), item.get("output_defaults", []))
+        node.select = True
+        created.append(node)
+
+    for index, item in enumerate(node_items):
+        if index >= len(created) or created[index] is None:
+            continue
+        parent_index = item.get("parent", -1)
+        if isinstance(parent_index, int) and 0 <= parent_index < len(created) and parent_index != index and created[parent_index] is not None:
+            try:
+                created[index].parent = created[parent_index]
+            except Exception:
+                pass
+
+    for index, item in enumerate(node_items):
+        if index >= len(created) or created[index] is None:
+            continue
+        location = item.get("location", [0.0, 0.0])
+        if not (isinstance(location, list) and len(location) >= 2):
+            continue
+        parent_index = item.get("parent", -1)
+        try:
+            if isinstance(parent_index, int) and parent_index >= 0:
+                created[index].location = (float(location[0]), float(location[1]))
+            else:
+                created[index].location = (cursor_x + float(location[0]), cursor_y + float(location[1]))
+        except Exception:
+            pass
+
+    for item in link_items:
+        from_index = item.get("from_node", -1)
+        to_index = item.get("to_node", -1)
+        if not isinstance(from_index, int) or not isinstance(to_index, int):
+            continue
+        if not (0 <= from_index < len(created) and 0 <= to_index < len(created)):
+            continue
+        if created[from_index] is None or created[to_index] is None:
+            continue
+        from_socket = _socket_lookup(created[from_index].outputs, item.get("from_socket", {}))
+        to_socket = _socket_lookup(created[to_index].inputs, item.get("to_socket", {}))
+        if from_socket and to_socket:
+            try:
+                tree.links.new(from_socket, to_socket)
+            except Exception:
+                pass
+
+    created_nodes = [node for node in created if node is not None]
+    if created_nodes:
+        tree.nodes.active = created_nodes[0]
+    return created_nodes[0] if created_nodes else None
 
 
 def _asset_index_signature() -> str:
@@ -1711,6 +2399,14 @@ def _append_category_parts(category: str, parts: list[str]) -> str:
 
 
 def _display_parts(entry: NodeSearchEntry) -> tuple[str, str]:
+    if entry.kind == "SNIPPET":
+        category_parts = [part.strip() for part in entry.category.split(" > ") if part.strip()]
+        if len(category_parts) >= 2:
+            category = f"{_ui_text('Snippet Node')} > {_ui_text(category_parts[-1])}"
+        else:
+            category = _ui_text("Snippet Node")
+        return category, entry.label
+
     category = entry.category
     english_parts = [part.strip() for part in entry.english.split(" > ") if part.strip()]
     chinese_parts = [part.strip() for part in entry.chinese.split(" > ") if part.strip()]
@@ -1757,6 +2453,8 @@ def _entry_base_type_color(entry: NodeSearchEntry) -> tuple[float, float, float,
     keys = category_parts + english_parts + node_type_words
     first_category = category_parts[0] if category_parts else ""
 
+    if entry.kind == "SNIPPET" and entry.node_type.startswith("Snippet:"):
+        return NODE_TYPE_COLORS.get(entry.node_type.split(":", 1)[1], CATEGORY_COLOR_FALLBACK)
     if entry.node_type == "NodeGroupInput":
         return NODE_TYPE_COLORS["output"]
     if entry.asset_color_tag:
@@ -3681,12 +4379,14 @@ class ENS_AddNodeByEnglishSearch(Operator):
     _hovered_result_index = None
     _keyboard_selection_active = False
     _pending_native_transform = False
+    _placement_uses_native_transform = True
     _timer = None
     _owner_window = None
     _owner_area = None
     _owner_region = None
     _owner_space = None
     _owner_tree = None
+    _snippet_mode = False
 
     @classmethod
     def poll(cls, context):
@@ -3696,7 +4396,10 @@ class ENS_AddNodeByEnglishSearch(Operator):
         return bool(getattr(space, "edit_tree", None) or getattr(space, "node_tree", None))
 
     def _refresh_results(self):
-        self._results = _search_entries(self._query, self._favorites)
+        if self._snippet_mode:
+            self._results = _search_snippets(self._query, self._tree_id, self._favorites)
+        else:
+            self._results = _search_entries(self._query, self._favorites)
         self._close_context_menu()
         self._scroll_offset = min(self._scroll_offset, max(0, len(self._results) - 1))
         if not self._results:
@@ -3749,6 +4452,7 @@ class ENS_AddNodeByEnglishSearch(Operator):
             self._timer = None
         self._placing_node = None
         self._pending_native_transform = False
+        self._placement_uses_native_transform = True
         if ACTIVE_CONSOLE_OPERATOR is self:
             ACTIVE_CONSOLE_OPERATOR = None
         self._tag_owner_redraw(context)
@@ -3775,16 +4479,19 @@ class ENS_AddNodeByEnglishSearch(Operator):
         except Exception:
             return False
 
-    def _begin_placement(self, context, event, node):
-        self._hide_console(context)
+    def _begin_placement(self, context, event, node, *, use_native_transform: bool = True):
         self._placing_node = node
+        self._placement_uses_native_transform = use_native_transform
         self._move_placing_node(context, event)
+        self._hide_console(context)
+        if context.area:
+            context.area.tag_redraw()
 
-        if event and event.type == "LEFTMOUSE" and event.value == "PRESS":
+        if event and event.type == "LEFTMOUSE" and event.value == "PRESS" and use_native_transform:
             self._pending_native_transform = True
             return {"RUNNING_MODAL"}
 
-        if self._start_native_node_transform(context):
+        if use_native_transform and self._start_native_node_transform(context):
             return self._finish(context, {"FINISHED"})
 
         return {"RUNNING_MODAL"}
@@ -3792,6 +4499,7 @@ class ENS_AddNodeByEnglishSearch(Operator):
     def _cancel_placement(self, context):
         node = self._placing_node
         self._placing_node = None
+        self._placement_uses_native_transform = True
         if node:
             try:
                 node.id_data.nodes.remove(node)
@@ -3826,6 +4534,14 @@ class ENS_AddNodeByEnglishSearch(Operator):
                 return self._begin_placement(context, event, result)
 
             self.report({"ERROR"}, f"Unable to add zone: {entry.english}")
+            return self._finish(context, {"CANCELLED"})
+
+        if entry.kind == "SNIPPET":
+            _store_cursor_location(context, event)
+            result = _insert_snippet(context, entry)
+            if result:
+                return self._begin_placement(context, event, result, use_native_transform=False)
+            self.report({"ERROR"}, f"Unable to add snippet: {entry.label}")
             return self._finish(context, {"CANCELLED"})
 
         return self._finish(context, {"CANCELLED"})
@@ -3916,6 +4632,13 @@ class ENS_AddNodeByEnglishSearch(Operator):
             return (("RESET_WIDTH", _ui_text("Reset Width")),)
         if self._context_menu_kind == "SHORTCUT":
             return (("REMOVE_SHORTCUT", _ui_text("Remove Shortcut")),)
+        if (
+            self._context_menu_kind == "RESULT"
+            and self._context_menu_index is not None
+            and self._context_menu_index < len(self._results)
+            and self._results[self._context_menu_index].kind == "SNIPPET"
+        ):
+            return (("FAVORITE", _ui_text("Add Favorite")), ("UNFAVORITE", _ui_text("Remove Favorite")))
         return (("FAVORITE", _ui_text("Add Favorite")), ("UNFAVORITE", _ui_text("Remove Favorite")), ("SHORTCUT", _ui_text("Add Shortcut")))
 
     def _context_menu_action_from_mouse(self, event):
@@ -4091,6 +4814,7 @@ class ENS_AddNodeByEnglishSearch(Operator):
         self._resizing_width = False
         self._resize_handle_hover = False
         self._resize_live_width = None
+        self._snippet_mode = False
         self._refresh_results()
         self._draw_handler = SpaceNodeEditor.draw_handler_add(self._draw_callback, (context,), "WINDOW", "POST_PIXEL")
         self._timer = context.window_manager.event_timer_add(0.2, window=context.window)
@@ -4172,6 +4896,18 @@ class ENS_AddNodeByEnglishSearch(Operator):
         if event.value == "PRESS" and (event.ctrl or event.oskey or event.alt):
             return {"PASS_THROUGH"}
 
+        if event.value == "PRESS" and (event.type in {"ACCENT_GRAVE", "GRLESS"} or event.unicode in {"`", "·"}):
+            self._snippet_mode = not self._snippet_mode
+            self._query = ""
+            self._selected_index = 0
+            self._scroll_offset = 0
+            self._hovered_result_index = None
+            self._keyboard_selection_active = False
+            self._refresh_results()
+            if context.area:
+                context.area.tag_redraw()
+            return {"RUNNING_MODAL"}
+
         if event.unicode and not event.ctrl and not event.alt and not event.oskey and event.type not in {"RET", "NUMPAD_ENTER", "ESC", "BACK_SPACE", "DEL"}:
             self._query += event.unicode
             self._selected_index = 0
@@ -4214,14 +4950,22 @@ class ENS_AddNodeByEnglishSearch(Operator):
                 if self._selected_index >= self._scroll_offset + self._visible_limit:
                     self._scroll_offset = self._selected_index - self._visible_limit + 1
             elif event.type == "BACK_SPACE":
-                self._query = self._query[:-1]
-                self._selected_index = 0
-                self._scroll_offset = 0
-                self._hovered_result_index = None
-                self._keyboard_selection_active = False
-                self._refresh_results()
-            elif event.type == "DEL":
-                self._clear_query()
+                if self._snippet_mode and not self._query:
+                    self._snippet_mode = False
+                    self._clear_query()
+                else:
+                    self._query = self._query[:-1]
+                    self._selected_index = 0
+                    self._scroll_offset = 0
+                    self._hovered_result_index = None
+                    self._keyboard_selection_active = False
+                    self._refresh_results()
+            elif event.type in {"DEL", "FORWARD_DEL"}:
+                if self._snippet_mode:
+                    self._snippet_mode = False
+                    self._clear_query()
+                else:
+                    self._clear_query()
             elif event.type == "LEFTMOUSE":
                 if self._context_menu_kind is not None:
                     action = self._context_menu_action_from_mouse(event)
@@ -4376,7 +5120,7 @@ class ENS_AddNodeByEnglishSearch(Operator):
         shortcut_gap = gap
         radius = _scaled(5, scale)
         width = min(_scaled(self._console_width_for_draw(), scale), region.width - _scaled(12, scale))
-        has_query = bool(_normalize(self._query))
+        has_query = bool(_normalize(self._query)) or self._snippet_mode
         search_width = width - padding * 2
         resize_gutter_width = max(_scaled(2, scale), 3)
         search_field_width = max(_scaled(80, scale), search_width - resize_gutter_width)
@@ -4428,6 +5172,20 @@ class ENS_AddNodeByEnglishSearch(Operator):
         placeholder_text_y = search_text_y
         _draw_text("⌕", x + padding + _scaled(10, scale), search_text_y - _scaled(1, scale), _scaled(20, scale), MUTED_TEXT_COLOR)
         query_x = x + padding + _scaled(32, scale)
+        if self._snippet_mode:
+            tag_text = _ui_text("Snippet Node")
+            tag_size = _scaled(11, scale)
+            tag_pad_x = _scaled(7, scale)
+            tag_width = _text_width(tag_text, tag_size) + tag_pad_x * 2
+            tag_height = _scaled(17, scale)
+            tag_x = query_x
+            tag_y = search_y + (search_height - tag_height) / 2
+            tag_base = _snippet_node_color()
+            tag_fill = _blend_color(tag_base, 0.38, FIELD_BACKGROUND)
+            tag_border = _blend_color(tag_base, 0.62, FIELD_BACKGROUND)
+            _draw_rounded_panel(tag_x, tag_y, tag_width, tag_height, max(3, radius - 2), tag_fill, tag_border)
+            _draw_text(tag_text, tag_x + tag_pad_x, tag_y + _scaled(4, scale), tag_size, TEXT_COLOR)
+            query_x = tag_x + tag_width + _scaled(8, scale)
         text_x = query_x if self._query else query_x + _scaled(9, scale)
         clear_size = max(_scaled(13, scale), 12)
         clear_x = x + padding + search_field_width - clear_size - _scaled(6, scale)
@@ -4521,7 +5279,8 @@ class ENS_AddNodeByEnglishSearch(Operator):
             return
 
         if not self._results:
-            _draw_text(_ui_text("No results found"), x + padding + _scaled(8, scale), rows_top - _scaled(20, scale), _scaled(13, scale), TEXT_COLOR)
+            empty_text = _ui_text("No snippet nodes") if self._snippet_mode else _ui_text("No results found")
+            _draw_text(empty_text, x + padding + _scaled(8, scale), rows_top - _scaled(20, scale), _scaled(13, scale), TEXT_COLOR)
             draw_resize_hint()
             draw_context_menu()
             return
@@ -4563,16 +5322,17 @@ class ENS_AddNodeByEnglishSearch(Operator):
             category_block_width = max(_scaled(36, scale), label_x - category_block_x - block_gap)
             label_block_x = label_x - _scaled(3, scale)
             label_block_width = max(0, x + padding + search_width - label_block_x)
-            if category_color_mode == "BLOCK":
+            row_category_color_mode = "BLOCK" if entry.kind == "SNIPPET" else category_color_mode
+            if row_category_color_mode == "BLOCK":
                 category_fill, category_border = _entry_type_colors(entry, active=is_emphasized)
                 category_fill = (category_fill[0], category_fill[1], category_fill[2], 1.0)
                 category_border = (category_border[0], category_border[1], category_border[2], 1.0)
                 _draw_rounded_panel(category_block_x, block_y, category_block_width, block_height, block_radius, category_fill, category_border)
-            if is_emphasized and category_color_mode == "BLOCK":
+            if is_emphasized and row_category_color_mode == "BLOCK":
                 _draw_rounded_panel(label_block_x, block_y, label_block_width, block_height, block_radius, HIGHLIGHT_COLOR, HIGHLIGHT_BORDER_COLOR)
             elif is_emphasized:
                 _draw_rounded_panel(category_block_x, block_y, search_width, block_height, block_radius, HIGHLIGHT_COLOR, HIGHLIGHT_BORDER_COLOR)
-            if category_color_mode == "LINE":
+            if row_category_color_mode == "LINE":
                 line_width = max(2, _scaled(3, scale))
                 line_height = block_height - _scaled(2, scale)
                 line_y = block_y + (block_height - line_height) / 2
@@ -4651,6 +5411,117 @@ class NODECONSOLE_OT_ResetConsoleSize(Operator):
         prefs = _preferences()
         if prefs:
             prefs.ui_scale = 0.8 if sys.platform == "win32" else 1.0
+        return {"FINISHED"}
+
+
+class NODECONSOLE_OT_SaveSnippet(Operator):
+    bl_idname = "node_console.save_snippet"
+    bl_label = "Save Snippet Node"
+    bl_description = "Save selected nodes as a reusable Node Console snippet"
+    bl_options = {"REGISTER", "UNDO"}
+
+    snippet_name: StringProperty(
+        name="Snippet Node Name",
+        description="Name used to search this snippet",
+        default="",
+    )
+    category: EnumProperty(
+        name="Snippet Node Category",
+        description="Category color and grouping for this snippet",
+        items=SNIPPET_CATEGORY_ITEMS,
+        default="NONE",
+    )
+
+    @classmethod
+    def poll(cls, context):
+        tree = _current_edit_tree(context)
+        return bool(tree and any(getattr(node, "select", False) for node in tree.nodes))
+
+    def invoke(self, context, _event):
+        tree = _current_edit_tree(context)
+        if not tree:
+            return {"CANCELLED"}
+        included, top_units = _selected_snippet_seed_nodes(tree)
+        if not included:
+            self.report({"WARNING"}, _ui_text("Select nodes to save as a snippet"))
+            return {"CANCELLED"}
+        frames = [node for node in top_units if getattr(node, "type", "") == "FRAME" or getattr(node, "bl_idname", "") == "NodeFrame"]
+        if len(frames) == 1 and not _top_units_need_outer_frame(top_units):
+            label = getattr(frames[0], "label", "") or getattr(frames[0], "name", "")
+            self.snippet_name = label if label != "Frame" else ""
+        tree_id = _node_tree_id(context)
+        self.category = _coerce_snippet_category_for_tree(_snippet_default_category(tree, included, tree_id), tree_id)
+        return context.window_manager.invoke_props_dialog(self, width=270)
+
+    def draw(self, _context):
+        layout = self.layout
+        for prop_name, label in (("snippet_name", "Name"), ("category", "Category")):
+            row = layout.row()
+            split = row.split(factor=0.24, align=True)
+            split.label(text=_ui_text(label))
+            control_row = split.row(align=True)
+            control_row.scale_x = 0.76
+            try:
+                control_row.prop(self, prop_name, text="")
+            except Exception:
+                control_row.label(text=getattr(self, prop_name, ""))
+
+    def execute(self, context):
+        name = self.snippet_name.strip()
+        if not name:
+            self.report({"WARNING"}, _ui_text("Name is required"))
+            return {"CANCELLED"}
+        tree = _current_edit_tree(context)
+        if not tree:
+            return {"CANCELLED"}
+        tree_id = _node_tree_id(context)
+        self.category = _coerce_snippet_category_for_tree(getattr(self, "category", "NONE"), tree_id)
+        nodes, root_frame = _ensure_snippet_frame(tree, name)
+        if not nodes or root_frame is None:
+            self.report({"WARNING"}, _ui_text("Select nodes to save as a snippet"))
+            return {"CANCELLED"}
+        payload = _serialize_snippet_nodes(tree, nodes, root_frame)
+        content_hash = _snippet_content_hash(payload)
+        snippets = _load_snippets()
+        for snippet in snippets:
+            if snippet.get("tree_type") == tree_id and snippet.get("content_hash") == content_hash:
+                duplicate_name = str(snippet.get("name") or _ui_text("Snippet Node"))
+                self.report(
+                    {"WARNING"},
+                    f"{_ui_text('This snippet already exists')}: {_ui_text('Existing snippet')} {duplicate_name}",
+                )
+                return {"CANCELLED"}
+        snippets.append({
+            "id": _snippet_identifier(),
+            "name": name,
+            "category": self.category,
+            "tree_type": tree_id,
+            "content_hash": content_hash,
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "payload": payload,
+        })
+        _save_snippets(snippets)
+        if context.area:
+            context.area.tag_redraw()
+        self.report({"INFO"}, f"{_ui_text('Save Snippet Node')}: {name}")
+        return {"FINISHED"}
+
+
+class NODECONSOLE_OT_RemoveSnippet(Operator):
+    bl_idname = "node_console.remove_snippet"
+    bl_label = "Remove Snippet Node"
+    bl_description = "Remove this saved Node Console snippet"
+    bl_options = {"INTERNAL"}
+
+    snippet_id: StringProperty(default="")
+
+    def execute(self, context):
+        snippet_id = self.snippet_id
+        snippets = [snippet for snippet in _load_snippets() if snippet.get("id") != snippet_id]
+        _save_snippets(snippets)
+        if context.area:
+            context.area.tag_redraw()
         return {"FINISHED"}
 
 
@@ -4751,6 +5622,55 @@ class ENS_AddonPreferences(AddonPreferences):
         description="Require Command for the Node Console shortcut on macOS",
         default=False,
         update=_shortcut_changed,
+    )
+    snippet_shortcut_key: EnumProperty(
+        name="Snippet Shortcut Key",
+        description="Keyboard key used to save selected nodes as a snippet node",
+        items=(
+            ("G", "G", ""),
+            ("A", "A", ""),
+            ("F", "F", ""),
+            ("SPACE", "Space", ""),
+        ),
+        default="G",
+        update=_shortcut_changed,
+    )
+    snippet_shortcut_shift: BoolProperty(
+        name="Shift",
+        description="Require Shift for the snippet node shortcut",
+        default=True,
+        update=_shortcut_changed,
+    )
+    snippet_shortcut_ctrl: BoolProperty(
+        name="Ctrl",
+        description="Require Ctrl for the snippet node shortcut",
+        default=sys.platform != "darwin",
+        update=_shortcut_changed,
+    )
+    snippet_shortcut_alt: BoolProperty(
+        name="Alt",
+        description="Require Alt for the snippet node shortcut",
+        default=False,
+        update=_shortcut_changed,
+    )
+    snippet_shortcut_oskey: BoolProperty(
+        name="Command",
+        description="Require Command for the snippet node shortcut on macOS",
+        default=sys.platform == "darwin",
+        update=_shortcut_changed,
+    )
+    snippet_library_path: StringProperty(
+        name="Snippet Library File",
+        description="External JSON file used to store snippet nodes",
+        default="",
+        subtype="FILE_PATH",
+        update=_preference_changed,
+    )
+    snippet_nodes_expanded: BoolProperty(
+        name="Snippet Nodes",
+        description="Show saved snippet nodes in preferences",
+        default=False,
+        update=_preference_changed,
     )
     scan_asset_libraries: BoolProperty(
         name="Show Cached Asset Nodes",
@@ -4870,7 +5790,7 @@ class ENS_AddonPreferences(AddonPreferences):
         # fuzzy_top.label(text="")
 
         box = layout.box()
-        box.label(text=_ui_text("Shortcut"))
+        box.label(text=_ui_text("Open Search Shortcut"))
         row = box.row(align=False)
         row.prop(self, "shortcut_key", text="", translate=False)
         row.separator(factor=1.0)
@@ -4882,6 +5802,19 @@ class ENS_AddonPreferences(AddonPreferences):
         row.prop(self, "shortcut_shift", text="Shift", toggle=True, translate=False)
         row.separator(factor=0.45)
         row.prop(self, "shortcut_alt", text="Alt", toggle=True, translate=False)
+        box.separator(type="LINE")
+        box.label(text=_ui_text("Save Snippet Node Shortcut"))
+        row = box.row(align=False)
+        row.prop(self, "snippet_shortcut_key", text="", translate=False)
+        row.separator(factor=1.0)
+        if sys.platform == "darwin":
+            row.prop(self, "snippet_shortcut_oskey", text=_ui_text("Command"), toggle=True, translate=False)
+            row.separator(factor=0.45)
+        row.prop(self, "snippet_shortcut_ctrl", text="Ctrl", toggle=True, translate=False)
+        row.separator(factor=0.45)
+        row.prop(self, "snippet_shortcut_shift", text="Shift", toggle=True, translate=False)
+        row.separator(factor=0.45)
+        row.prop(self, "snippet_shortcut_alt", text="Alt", toggle=True, translate=False)
         conflict_labels = _shortcut_conflict_labels()
         if conflict_labels:
             warning = box.box()
@@ -4959,12 +5892,63 @@ class ENS_AddonPreferences(AddonPreferences):
                     remove_op.identifier = identifier
                     remove_op.tree_id = tree_id
 
+        library_box = layout.box()
+        library_header = library_box.row(align=True)
+        library_header.label(text=_ui_text("Snippet Libraries"), icon="TRIA_DOWN")
+        library_outer = library_box.row(align=True)
+        library_list = library_outer.box()
+        library_row = library_list.row(align=True)
+        library_row.label(text=_ui_text("Default Library"))
+        library_row.label(text=_ui_text("Active"), icon="CHECKMARK")
+        library_path_row = library_list.row(align=True)
+        library_path_row.enabled = False
+        library_path_row.label(text=str(_snippets_path()))
+        library_buttons = library_outer.column(align=True)
+        library_buttons.enabled = False
+        add_button = library_buttons.operator("wm.url_open", text="", icon="ADD")
+        add_button.url = ""
+        remove_button = library_buttons.operator("wm.url_open", text="", icon="REMOVE")
+        remove_button.url = ""
+        library_box.prop(self, "snippet_library_path", text=_ui_text("Snippet Library File"))
+
+        snippets_box = layout.box()
+        header = snippets_box.row(align=True)
+        header.prop(self, "snippet_nodes_expanded", text="", icon="TRIA_DOWN" if self.snippet_nodes_expanded else "TRIA_RIGHT", emboss=False)
+        header.label(text=_ui_text("Snippet Nodes"))
+        snippets = sorted(_load_snippets(), key=lambda item: (str(item.get("tree_type", "")), str(item.get("category", "")), str(item.get("name", "")).lower()))
+        if not self.snippet_nodes_expanded:
+            return
+        if not snippets:
+            snippets_box.label(text=_ui_text("No snippet nodes"))
+        else:
+            first_rendered = True
+            for tree_id, label in NODE_TREE_GROUPS:
+                group = [item for item in snippets if item.get("tree_type") == tree_id]
+                if not group:
+                    continue
+                if not first_rendered:
+                    snippets_box.separator(type="LINE")
+                first_rendered = False
+                header = snippets_box.row()
+                header.enabled = False
+                header.label(text=_ui_text(label))
+                for snippet in group:
+                    payload = snippet.get("payload", {})
+                    node_count = len(payload.get("nodes", [])) if isinstance(payload, dict) else 0
+                    link_count = len(payload.get("links", [])) if isinstance(payload, dict) else 0
+                    row = snippets_box.row(align=True)
+                    row.label(text=f"{_snippet_category_label(snippet.get('category', 'NONE'))} > {snippet.get('name', '')}  ({node_count} {_ui_text('nodes')} / {link_count} {_ui_text('links')})")
+                    remove_op = row.operator(NODECONSOLE_OT_RemoveSnippet.bl_idname, text="", icon="X")
+                    remove_op.snippet_id = str(snippet.get("id", ""))
+
 
 classes = (
     ENS_AddNodeByEnglishSearch,
     NODECONSOLE_OT_RefreshAssetIndex,
     NODECONSOLE_OT_ResetConsoleWidth,
     NODECONSOLE_OT_ResetConsoleSize,
+    NODECONSOLE_OT_SaveSnippet,
+    NODECONSOLE_OT_RemoveSnippet,
     NODECONSOLE_OT_RemoveFavorite,
     NODECONSOLE_OT_RemoveShortcut,
     NODECONSOLE_OT_MoveShortcut,
@@ -5018,10 +6002,10 @@ def _node_console_keymaps(keyconfig):
 
 
 def _node_console_keymap_idnames() -> set[str]:
-    return {ENS_AddNodeByEnglishSearch.bl_idname, *NODE_CONSOLE_LEGACY_KEYMAP_IDNAMES}
+    return {ENS_AddNodeByEnglishSearch.bl_idname, NODECONSOLE_OT_SaveSnippet.bl_idname, *NODE_CONSOLE_LEGACY_KEYMAP_IDNAMES}
 
 
-def _node_console_keymap_definition(prefs=None) -> dict:
+def _node_console_search_keymap_definition(prefs=None) -> dict:
     return {
         "keymap": NODE_CONSOLE_KEYMAP_NAME,
         "space_type": NODE_CONSOLE_KEYMAP_SPACE_TYPE,
@@ -5033,6 +6017,24 @@ def _node_console_keymap_definition(prefs=None) -> dict:
         "alt": prefs.shortcut_alt if prefs else False,
         "oskey": prefs.shortcut_oskey if prefs else False,
     }
+
+
+def _node_console_save_snippet_keymap_definition(prefs=None) -> dict:
+    return {
+        "keymap": NODE_CONSOLE_KEYMAP_NAME,
+        "space_type": NODE_CONSOLE_KEYMAP_SPACE_TYPE,
+        "idname": NODECONSOLE_OT_SaveSnippet.bl_idname,
+        "type": prefs.snippet_shortcut_key if prefs else "G",
+        "value": "PRESS",
+        "shift": prefs.snippet_shortcut_shift if prefs else True,
+        "ctrl": prefs.snippet_shortcut_ctrl if prefs else sys.platform != "darwin",
+        "alt": prefs.snippet_shortcut_alt if prefs else False,
+        "oskey": prefs.snippet_shortcut_oskey if prefs else sys.platform == "darwin",
+    }
+
+
+def _node_console_keymap_definitions(prefs=None) -> tuple[dict, ...]:
+    return (_node_console_search_keymap_definition(prefs), _node_console_save_snippet_keymap_definition(prefs))
 
 
 def _register_node_console_keymap_item(keyconfig, definition: dict):
@@ -5178,9 +6180,10 @@ def register_keymap():
 
     _remove_node_console_keymap_items()
 
-    registered = _register_node_console_keymap_item(keyconfig, _node_console_keymap_definition(prefs))
-    if registered:
-        KEYMAP_ITEMS.append(registered)
+    for definition in _node_console_keymap_definitions(prefs):
+        registered = _register_node_console_keymap_item(keyconfig, definition)
+        if registered:
+            KEYMAP_ITEMS.append(registered)
     _update_keyconfigs()
 
 
