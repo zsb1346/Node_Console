@@ -20,13 +20,13 @@ from bpy.types import AddonPreferences, Operator, SpaceNodeEditor
 from gpu_extras.batch import batch_for_shader
 
 
-ADDON_VERSION = "1.1.0"
+ADDON_VERSION = "1.1.1"
 
 
 bl_info = {
     "name": "Node Console",
     "author": "Anthem",
-    "version": (1, 1, 0),
+    "version": (1, 1, 1),
     "blender": (5, 1, 2),
     "location": "Node Editor > Shift A",
     "description": "Language-independent custom node launcher with favorite boosting.",
@@ -2621,6 +2621,13 @@ def _word_prefix_tokens_match(text: str, tokens: list[str]) -> bool:
     return all(any(_token_matches_word_prefix(token, word) for word in words) for token in tokens)
 
 
+def _whole_word_tokens_match(text: str, tokens: list[str]) -> bool:
+    if not tokens:
+        return False
+    words = set(_normalize(text).split())
+    return bool(words) and all(token in words for token in tokens)
+
+
 def _ordered_chars_match(needle: str, haystack: str) -> bool:
     needle = _compact(needle)
     haystack = _compact(haystack)
@@ -2741,6 +2748,7 @@ def _query_match_parts(entry: NodeSearchEntry, query: str):
     root_exact = any(part == query for part in root_parts)
     path_text = " ".join([entry.category, entry.english])
     leaf_word_match = any(_word_prefix_tokens_match(part, tokens) for part in leaf_parts)
+    leaf_whole_word_match = any(_whole_word_tokens_match(part, tokens) for part in leaf_parts)
     path_word_match = _word_prefix_tokens_match(path_text, tokens)
     root_word_match = _word_prefix_tokens_match(_path_without_leaf(entry), tokens)
     leaf_pinyin_level = _pinyin_match_level(
@@ -2789,6 +2797,7 @@ def _query_match_parts(entry: NodeSearchEntry, query: str):
         "root_pinyin_match": root_pinyin_match,
         "root_pinyin_level": root_pinyin_level,
         "leaf_word_match": leaf_word_match,
+        "leaf_whole_word_match": leaf_whole_word_match,
         "path_word_match": path_word_match,
         "root_word_match": root_word_match,
         "ordered_leaf_match": ordered_leaf_match,
@@ -2799,6 +2808,12 @@ def _query_match_parts(entry: NodeSearchEntry, query: str):
 
 
 OFFICIALISH_QUERY_ORDER = {
+    "add": (
+        "math > add",
+        "vector math > add",
+        "integer math > add",
+        "mix > add",
+    ),
     "math": (
         "math",
         "vector math",
@@ -2933,10 +2948,12 @@ def _has_visible_output_setting(entry: NodeSearchEntry) -> bool:
     return any(name == "visible_output" for name, _value in entry.settings)
 
 
-def _dynamic_preferred_order(entry: NodeSearchEntry, query: str) -> int:
-    match = _query_match_parts(entry, query)
+def _dynamic_preferred_order(entry: NodeSearchEntry, query: str, match=None) -> int:
+    match = match or _query_match_parts(entry, query)
     if match["leaf_exact"] or match["leaf_compact_exact"]:
         return 1_000
+    if match["leaf_whole_word_match"]:
+        return 1_010
     if match["leaf_prefix"] or match["leaf_compact_prefix"]:
         return 1_020
     if match["is_primary"] and (match["leaf_word_match"] or match["leaf_compact_prefix"]):
@@ -2984,10 +3001,10 @@ def _category_sort_priority(entry: NodeSearchEntry) -> int:
     return 5
 
 
-def _leaf_prefix_sort_key(entry: NodeSearchEntry, query: str) -> tuple[int, int, int, int, int]:
+def _leaf_prefix_sort_key(entry: NodeSearchEntry, query: str, match=None) -> tuple[int, int, int, int, int]:
     query = _normalize(query)
     tokens = query.split()
-    match = _query_match_parts(entry, query)
+    match = match or _query_match_parts(entry, query)
     leaf = match["leaf_parts"][0] if match["leaf_parts"] else ""
     leaf_words = leaf.split()
     if not tokens or not leaf_words:
@@ -3026,11 +3043,11 @@ def _officialish_query_key(query: str) -> str | None:
     return None
 
 
-def _officialish_preferred_order(entry: NodeSearchEntry, query: str) -> int:
+def _officialish_preferred_order(entry: NodeSearchEntry, query: str, match=None) -> int:
     preferred_key = _officialish_query_key(query)
     preferred = OFFICIALISH_QUERY_ORDER.get(preferred_key or "")
     if not preferred:
-        return _dynamic_preferred_order(entry, query)
+        return _dynamic_preferred_order(entry, query, match)
 
     english_parts = [_normalize(part) for part in entry.english.split(" > ") if part.strip()]
     if not english_parts:
@@ -3044,11 +3061,11 @@ def _officialish_preferred_order(entry: NodeSearchEntry, query: str) -> int:
                 return index
         elif leaf == name or full == name:
             return index
-    return _dynamic_preferred_order(entry, query)
+    return _dynamic_preferred_order(entry, query, match)
 
 
-def _officialish_sort_bucket(entry: NodeSearchEntry, query: str) -> int:
-    match = _query_match_parts(entry, query)
+def _officialish_sort_bucket(entry: NodeSearchEntry, query: str, match=None) -> int:
+    match = match or _query_match_parts(entry, query)
     if match["is_primary"] and (match["leaf_exact"] or match["leaf_compact_exact"]):
         return 0
     if match["is_primary"] and (match["category_match"] or match["leaf_contains"] or match["leaf_compact_contains"] or match["leaf_pinyin_level"] >= 3):
@@ -3064,8 +3081,8 @@ def _officialish_sort_bucket(entry: NodeSearchEntry, query: str) -> int:
     return 5
 
 
-def _primary_match_order(entry: NodeSearchEntry, query: str) -> int:
-    match = _query_match_parts(entry, query)
+def _primary_match_order(entry: NodeSearchEntry, query: str, match=None) -> int:
+    match = match or _query_match_parts(entry, query)
     leaf = match["leaf_parts"][0] if match["leaf_parts"] else ""
     category_parts = match["category_parts"]
     in_leaf = query in leaf or match["leaf_compact_contains"]
@@ -3893,7 +3910,7 @@ def _rebuild_search_entries(context):
     add_local_groups()
 
 
-def _score_entry(entry: NodeSearchEntry, query: str, favorites: set[str], allow_weak_pinyin: bool = False) -> int | None:
+def _score_entry(entry: NodeSearchEntry, query: str, favorites: set[str], allow_weak_pinyin: bool = False, match=None) -> int | None:
     query = _normalize(query)
     if not query:
         return None
@@ -3903,7 +3920,7 @@ def _score_entry(entry: NodeSearchEntry, query: str, favorites: set[str], allow_
     compact_query = query.replace(" ", "")
     tokens = query.split()
 
-    match = _query_match_parts(entry, query)
+    match = match or _query_match_parts(entry, query)
     english = match["english"]
     chinese = match["chinese"]
     english_parts = match["english_parts"]
@@ -3911,7 +3928,7 @@ def _score_entry(entry: NodeSearchEntry, query: str, favorites: set[str], allow_
     category_match = match["category_match"]
     all_parts = english_parts + chinese_parts
 
-    preferred_order = _officialish_preferred_order(entry, query)
+    preferred_order = _officialish_preferred_order(entry, query, match)
     # Compact matching is intentionally narrow. Without this guard, short queries
     # can match across word boundaries, for example "set" in "Noise Texture".
     compact_match = bool(len(compact_query) >= 5 and " " in query and compact_query in compact_text)
@@ -3952,6 +3969,8 @@ def _score_entry(entry: NodeSearchEntry, query: str, favorites: set[str], allow_
         display_depth = _entry_display_depth(entry)
         if match["leaf_exact"] or match["leaf_compact_exact"]:
             score += 760
+        elif match["leaf_whole_word_match"]:
+            score += 320
         elif match["leaf_prefix"] or match["leaf_compact_prefix"]:
             score += 260
         elif match["root_exact"]:
@@ -3993,13 +4012,15 @@ def _score_entry(entry: NodeSearchEntry, query: str, favorites: set[str], allow_
 
 
 def _search_entries(query: str, favorites: set[str]) -> list[NodeSearchEntry]:
+    normalized_query = _normalize(query)
+
     def collect(allow_weak_pinyin: bool = False):
         scored_entries = []
         for index, entry in enumerate(NODE_SEARCH_ENTRIES):
-            score = _score_entry(entry, query, favorites, allow_weak_pinyin=allow_weak_pinyin)
+            match = _query_match_parts(entry, normalized_query)
+            score = _score_entry(entry, normalized_query, favorites, allow_weak_pinyin=allow_weak_pinyin, match=match)
             if score is None:
                 continue
-            match = _query_match_parts(entry, query)
             strong_favorite = entry.identifier in favorites and (
                 match["leaf_exact"]
                 or match["leaf_prefix"]
@@ -4007,14 +4028,15 @@ def _search_entries(query: str, favorites: set[str]) -> list[NodeSearchEntry]:
                 or match["leaf_compact_exact"]
                 or match["leaf_compact_prefix"]
                 or match["leaf_compact_contains"]
+                or match["leaf_whole_word_match"]
                 or match["leaf_word_match"]
                 or match["leaf_pinyin_level"] >= (2 if allow_weak_pinyin else 3)
                 or match["root_exact"]
             )
-            bucket = _officialish_sort_bucket(entry, query)
-            primary_order = _primary_match_order(entry, _normalize(query))
-            preferred_order = _officialish_preferred_order(entry, query)
-            scored_entries.append((score, entry.identifier in favorites, strong_favorite, entry.english.lower(), index, bucket, primary_order, preferred_order, entry))
+            bucket = _officialish_sort_bucket(entry, normalized_query, match)
+            primary_order = _primary_match_order(entry, normalized_query, match)
+            preferred_order = _officialish_preferred_order(entry, normalized_query, match)
+            scored_entries.append((score, entry.identifier in favorites, strong_favorite, entry.english.lower(), index, bucket, primary_order, preferred_order, entry, match))
         return scored_entries
 
     scored = collect()
@@ -4023,16 +4045,16 @@ def _search_entries(query: str, favorites: set[str]) -> list[NodeSearchEntry]:
 
     def sort_key(item):
         entry = item[8]
-        match = _query_match_parts(entry, query)
+        match = item[9]
         output_sort = entry.english.lower() if _has_visible_output_setting(entry) and match["root_word_match"] else ""
-        leaf_sort = _leaf_prefix_sort_key(entry, query)
-        deprecated_penalty = _deprecated_sort_penalty(entry, query)
-        if _officialish_query_key(query):
+        leaf_sort = _leaf_prefix_sort_key(entry, normalized_query, match)
+        deprecated_penalty = _deprecated_sort_penalty(entry, normalized_query)
+        if _officialish_query_key(normalized_query):
             return (item[7], not item[2], deprecated_penalty, leaf_sort, item[5], item[6], output_sort, not item[1], item[4], -item[0], item[3])
         return (not item[2], item[7], deprecated_penalty, leaf_sort, item[5], item[6], output_sort, not item[1], item[4], -item[0], item[3])
 
     scored.sort(key=sort_key)
-    return [item[-1] for item in scored]
+    return [item[8] for item in scored]
 
 
 def _store_cursor_location(context, event):
@@ -4638,7 +4660,7 @@ class ENS_AddNodeByEnglishSearch(Operator):
             and self._context_menu_index < len(self._results)
             and self._results[self._context_menu_index].kind == "SNIPPET"
         ):
-            return (("FAVORITE", _ui_text("Add Favorite")), ("UNFAVORITE", _ui_text("Remove Favorite")))
+            return (("FAVORITE", _ui_text("Add Favorite")), ("UNFAVORITE", _ui_text("Remove Favorite")), ("REMOVE_SNIPPET", _ui_text("Remove Snippet Node")))
         return (("FAVORITE", _ui_text("Add Favorite")), ("UNFAVORITE", _ui_text("Remove Favorite")), ("SHORTCUT", _ui_text("Add Shortcut")))
 
     def _context_menu_action_from_mouse(self, event):
@@ -4674,6 +4696,23 @@ class ENS_AddNodeByEnglishSearch(Operator):
             _remove_favorite(identifier, self._tree_id)
             self._favorites = _load_favorites_for_tree(self._tree_id)
             self._favorite_meta = _load_favorite_meta()
+        self._refresh_results()
+
+    def _remove_snippet_result(self, index):
+        if index is None or index >= len(self._results):
+            return
+        entry = self._results[index]
+        if entry.kind != "SNIPPET":
+            return
+        snippet_id = entry.identifier.split(":", 1)[1] if ":" in entry.identifier else ""
+        if not snippet_id:
+            return
+        _save_snippets([snippet for snippet in _load_snippets() if snippet.get("id") != snippet_id])
+        _remove_favorite(entry.identifier, self._tree_id)
+        self._favorites = _load_favorites_for_tree(self._tree_id)
+        self._favorite_meta = _load_favorite_meta()
+        self._selected_index = 0
+        self._scroll_offset = 0
         self._refresh_results()
 
     def _open_context_menu(self, event, index):
@@ -4898,7 +4937,6 @@ class ENS_AddNodeByEnglishSearch(Operator):
 
         if event.value == "PRESS" and (event.type in {"ACCENT_GRAVE", "GRLESS"} or event.unicode in {"`", "·"}):
             self._snippet_mode = not self._snippet_mode
-            self._query = ""
             self._selected_index = 0
             self._scroll_offset = 0
             self._hovered_result_index = None
@@ -4979,6 +5017,9 @@ class ENS_AddNodeByEnglishSearch(Operator):
                         self._set_favorite(self._context_menu_index, True)
                     elif action == "UNFAVORITE":
                         self._set_favorite(self._context_menu_index, False)
+                    elif action == "REMOVE_SNIPPET":
+                        self._remove_snippet_result(self._context_menu_index)
+                        self._close_context_menu()
                     elif action == "SHORTCUT" and entry:
                         _add_shortcut(entry.identifier, self._tree_id)
                         self._favorite_meta[entry.identifier] = entry.label
