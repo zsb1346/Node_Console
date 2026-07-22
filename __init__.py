@@ -20,13 +20,13 @@ from bpy.types import AddonPreferences, Operator, SpaceNodeEditor
 from gpu_extras.batch import batch_for_shader
 
 
-ADDON_VERSION = "1.1.1"
+ADDON_VERSION = "1.1.2"
 
 
 bl_info = {
     "name": "Node Console",
     "author": "Anthem",
-    "version": (1, 1, 1),
+    "version": (1, 1, 2),
     "blender": (5, 1, 2),
     "location": "Node Editor > Shift A",
     "description": "Language-independent custom node launcher with favorite boosting.",
@@ -2813,6 +2813,9 @@ OFFICIALISH_QUERY_ORDER = {
         "vector math > add",
         "integer math > add",
         "mix > add",
+    ),
+    "join": (
+        "join geometry",
     ),
     "math": (
         "math",

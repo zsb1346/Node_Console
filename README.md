@@ -4,13 +4,13 @@
 
 
 ![Blender](https://img.shields.io/badge/Blender-5.1.2-f5792a?logo=blender&logoColor=white)
-![Version](https://img.shields.io/badge/version-1.1.1-blue)
+![Version](https://img.shields.io/badge/version-1.1.2-blue)
 ![Category](https://img.shields.io/badge/category-Node%20Editor-555)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 
 作者：Anthem  
-版本：1.1.1
+版本：1.1.2
 
 ## 中文
 
@@ -22,6 +22,7 @@ Node Console 是一个 Blender 节点搜索插件。它会替换节点编辑器�
 - 支持收藏节点和快捷节点。favorite 和 shortcut 可以自定义搜索权重，也方便快速创建常用节点。
 - 在搜索结果左侧显示节点类型颜色标签，方便根据节点类型快速检索。
 - 支持手动刷新节点库，可以检索并分类 Asset Library 和外部导入的节点组。
+- 支持将一组节点及其连接保存为可复用的「组合点」，并通过英文或拼音快速检索。
 
 ### 拼音搜索
 
@@ -29,7 +30,7 @@ Node Console 将拼音搜索作为主要中文检索方式。你可以直接输�
 
 ### 安装
 
-1. 从 release assets 下载 `Node_Console_1.1.1.zip`。
+1. 从 release assets 下载 `Node_Console_1.1.2.zip`。
 2. 在 Blender 中打开 `编辑 > 偏好设置 > 插件`。
 3. 点击 `安装...`，选择下载的 zip 文件。
 4. 启用 `Node Console`。
@@ -44,6 +45,18 @@ Node Console 将拼音搜索作为主要中文检索方式。你可以直接输�
 6. 点击鼠标左键，或按 Enter 落位。
 7. 右键搜索结果，可以添加或取消收藏，也可以添加快捷节点。
 
+### 组合点
+
+1. 在节点编辑器中选中需要复用的节点或 Frame。
+2. 按 `Ctrl + Shift + G`；macOS 默认按 `Command + Shift + G`。
+3. 输入组合点名称并选择类目。名称用于后续英文或拼音检索；没有 Frame 时，插件会自动创建 Frame。
+4. 按 `Shift + A` 打开 Node Console，然后按键盘 Tab 上方的反引号键 `` ` `` 进入「组合点」模式。中文输入法产生的 `·` 同样有效。
+5. 输入组合点名称或拼音，按 Enter 或点击结果，将整组节点及其内部连接放回当前节点编辑器。
+6. 再按一次 `` ` `` / `·` 可返回普通节点搜索；切换模式时会保留当前输入内容。
+7. 右键组合点结果，可以添加或取消收藏，也可以删除该组合点。
+
+组合点保存在外部 JSON 库文件中。你可以在偏好设置中调整保存组合点的快捷键、查看组合点库路径，并展开组合点列表进行管理。
+
 ### 偏好设置
 
 - `搜索结果显示`（Search Result Display）：选择 English、中文、English / 中文 或 中文 / English。
@@ -53,6 +66,8 @@ Node Console 将拼音搜索作为主要中文检索方式。你可以直接输�
 - `类目颜色显示`（Category Color Display）：选择类目颜色底块、左侧颜色竖线或关闭类目颜色装饰。
 - `刷新资产索引`（Refresh Asset Index）：手动刷新资产节点缓存。
 - `快捷键`（Shortcut）：修改打开 Node Console 的快捷键。
+- `保存组合点快捷键`（Save Snippet Node Shortcut）：修改保存当前选中节点组合的快捷键。
+- `组合点库`（Snippet Libraries）：查看组合点 JSON 库文件的位置和已保存的组合点。
 - `收藏`（Favorites）：查看并删除收藏节点。
 - `快捷节点`（Shortcuts）：查看、删除或调整快捷节点顺序。
 
@@ -71,6 +86,7 @@ Node Console is a custom node search add-on for Blender. It replaces the default
 - Supports favorite nodes and shortcut nodes. Favorites and shortcuts can customize search weighting and make common nodes faster to create.
 - Shows colored node type tags on the left side of search results, making nodes easier to scan by type.
 - Supports manual node library refresh, including searchable and categorized Asset Library or externally imported node groups.
+- Saves connected node sets as reusable Snippet Nodes that can be found by English or pinyin.
 
 ### Pinyin Search
 
@@ -78,7 +94,7 @@ Node Console treats pinyin as the primary way to search Chinese node names. You 
 
 ### Install
 
-1. Download `Node_Console_1.1.1.zip` from the release assets.
+1. Download `Node_Console_1.1.2.zip` from the release assets.
 2. In Blender, open `Edit > Preferences > Add-ons`.
 3. Click `Install...`, then choose the downloaded zip file.
 4. Enable `Node Console`.
@@ -93,6 +109,18 @@ Node Console treats pinyin as the primary way to search Chinese node names. You 
 6. Click the left mouse button, or press Enter to place the node.
 7. Right-click a result to add or remove favorites and shortcuts.
 
+### Snippet Nodes
+
+1. Select the nodes or frame you want to reuse in a node editor.
+2. Press `Ctrl + Shift + G`; on macOS, the default is `Command + Shift + G`.
+3. Enter a required snippet name and choose a category. If the selection has no frame, Node Console creates one automatically.
+4. Press `Shift + A` to open Node Console, then press the backtick key `` ` `` above Tab to enter Snippet Node mode. The `·` character produced by a Chinese input method is also supported.
+5. Search by the snippet name or its pinyin, then press Enter or click the result to insert the complete node set with its internal links.
+6. Press `` ` `` or `·` again to return to regular node search. The current query is preserved while switching modes.
+7. Right-click a snippet result to add or remove its favorite status, or to delete the snippet.
+
+Snippet Nodes are stored in an external JSON library file. Preferences provide controls for the save shortcut, the library path, and the expandable list of saved snippets.
+
 ### Preferences
 
 - `Search Result Display`: choose English, 中文, English / 中文, or 中文 / English.
@@ -102,6 +130,8 @@ Node Console treats pinyin as the primary way to search Chinese node names. You 
 - `Category Color Display`: chooses colored category blocks, left-side color lines, or no category color decoration.
 - `Refresh Asset Index`: rebuilds the asset node cache manually.
 - `Shortcut`: changes the key and modifiers used to open Node Console.
+- `Save Snippet Node Shortcut`: changes the shortcut used to save the selected node set.
+- `Snippet Libraries`: shows the snippet JSON library location and saved snippets.
 - `Favorites`: lists favorite nodes and lets you remove them.
 - `Shortcuts`: lists shortcut nodes and lets you remove or reorder them.
 
