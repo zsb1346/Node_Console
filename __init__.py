@@ -20,13 +20,13 @@ from bpy.types import AddonPreferences, Operator, SpaceNodeEditor
 from gpu_extras.batch import batch_for_shader
 
 
-ADDON_VERSION = "1.1.2"
+ADDON_VERSION = "1.1.3"
 
 
 bl_info = {
     "name": "Node Console",
     "author": "Anthem",
-    "version": (1, 1, 2),
+    "version": (1, 1, 3),
     "blender": (5, 1, 2),
     "location": "Node Editor > Shift A",
     "description": "Language-independent custom node launcher with favorite boosting.",
@@ -50,6 +50,22 @@ NODE_CLASS_CACHE: list[type] | None = None
 BACKGROUND_ASSET_INDEX = None
 GPU_UNIFORM_SHADER = None
 TEXT_WIDTH_CACHE: dict[tuple[str, int], float] = {}
+
+FADE_BATCH_CACHE: dict[tuple[float, float, int], "gpu.types.GPUBatch"] = {}
+RECT_BATCH_CACHE: dict[tuple[float, float, float, float, float, int], "gpu.types.GPUBatch"] = {}
+
+# ============================================================
+# Fast Search / Render Cache
+# ============================================================
+
+FAST_SEARCH_INDEX = None
+FAST_SEARCH_PROFILES: dict[str, "FastSearchProfile"] = {}
+
+DISPLAY_PARTS_CACHE: dict[tuple[str, str], tuple[str, str]] = {}
+DISPLAY_CATEGORY_CACHE: dict[tuple[str, bool], str] = {}
+BASE_TYPE_COLOR_CACHE: dict[str, tuple[float, float, float, float]] = {}
+
+GPU_FLAT_COLOR_SHADER = None
 
 FONT_ID = 0
 MAX_RESULTS = 12
@@ -321,8 +337,18 @@ NODE_ENTRY_BY_ID: dict[str, NodeSearchEntry] = {}
 
 def _clear_search_caches():
     global NODE_CLASS_CACHE
+    global FAST_SEARCH_INDEX
+
     MENU_ENTRY_CACHE.clear()
     TRANSLATION_LABEL_CACHE.clear()
+
+    FAST_SEARCH_INDEX = None
+    FAST_SEARCH_PROFILES.clear()
+
+    DISPLAY_PARTS_CACHE.clear()
+    DISPLAY_CATEGORY_CACHE.clear()
+    BASE_TYPE_COLOR_CACHE.clear()
+
     NODE_CLASS_CACHE = None
 
 
@@ -2299,15 +2325,30 @@ def _ui_text(text: str) -> str:
 
 
 def _display_category_label(category: str) -> str:
-    if not _is_chinese_interface():
+    chinese_interface = _is_chinese_interface()
+
+    cache_key = (category, chinese_interface)
+
+    cached = DISPLAY_CATEGORY_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    if not chinese_interface:
+        DISPLAY_CATEGORY_CACHE[cache_key] = category
         return category
 
     parts = [part.strip() for part in category.split(" > ") if part.strip()]
+
     translated_parts = []
     for part in parts:
         key = _normalize(part)
-        translated_parts.append(COMPOSITOR_CATEGORY_ZH.get(key) or _translation_label(part))
-    return " > ".join(translated_parts) if translated_parts else category
+        translated_parts.append(
+            COMPOSITOR_CATEGORY_ZH.get(key) or _translation_label(part)
+        )
+
+    result = " > ".join(translated_parts) if translated_parts else category
+    DISPLAY_CATEGORY_CACHE[cache_key] = result
+    return result
 
 
 def _display_mode() -> str:
@@ -2316,10 +2357,11 @@ def _display_mode() -> str:
 
 
 def _chinese_fuzzy_match_enabled() -> bool:
-    # Temporarily disabled for the 0.9.x pinyin search work. Keep the preference
-    # and implementation in place so the sparse Chinese matcher can be restored
-    # without breaking existing user settings.
-    return False
+    prefs = _preferences()
+    if not prefs:
+        return True
+
+    return bool(getattr(prefs, "chinese_fuzzy_match", True))
     # prefs = _preferences()
     # return bool(prefs and prefs.chinese_fuzzy_match)
 
@@ -2399,20 +2441,35 @@ def _append_category_parts(category: str, parts: list[str]) -> str:
 
 
 def _display_parts(entry: NodeSearchEntry) -> tuple[str, str]:
+    display_mode = _display_mode()
+
+    cache_key = (
+        entry.identifier,
+        display_mode,
+    )
+
+    cached = DISPLAY_PARTS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     if entry.kind == "SNIPPET":
         category_parts = [part.strip() for part in entry.category.split(" > ") if part.strip()]
         if len(category_parts) >= 2:
             category = f"{_ui_text('Snippet Node')} > {_ui_text(category_parts[-1])}"
         else:
             category = _ui_text("Snippet Node")
-        return category, entry.label
+        result = (category, entry.label)
+        DISPLAY_PARTS_CACHE[cache_key] = result
+        return result
 
     category = entry.category
     english_parts = [part.strip() for part in entry.english.split(" > ") if part.strip()]
     chinese_parts = [part.strip() for part in entry.chinese.split(" > ") if part.strip()]
 
     if len(english_parts) <= 1:
-        return category, _entry_label(entry.english, entry.chinese)
+        result = (category, _entry_label(entry.english, entry.chinese))
+        DISPLAY_PARTS_CACHE[cache_key] = result
+        return result
 
     settings = _settings_dict(entry.settings)
     category_parts = english_parts[:-1]
@@ -2421,14 +2478,18 @@ def _display_parts(entry: NodeSearchEntry) -> tuple[str, str]:
     if entry.node_type == "ShaderNodeMix" and settings.get("data_type") == "RGBA" and "blend_type" in settings:
         category_parts = ["Mix Color"]
     elif entry.node_type == "ShaderNodeMix" and settings.get("data_type") == "RGBA" and entry.english == "Mix > Mix Color":
-        return category, _entry_label("Mix Color", chinese_parts[-1] if chinese_parts else entry.chinese)
+        result = (category, _entry_label("Mix Color", chinese_parts[-1] if chinese_parts else entry.chinese))
+        DISPLAY_PARTS_CACHE[cache_key] = result
+        return result
     elif entry.node_type == "ShaderNodeMix" and settings.get("data_type") in {"VECTOR", "ROTATION"}:
         category_parts = []
 
     category = _append_category_parts(category, category_parts)
     english = english_parts[-1]
     chinese = chinese_label or english
-    return category, _entry_label(english, chinese)
+    result = (category, _entry_label(english, chinese))
+    DISPLAY_PARTS_CACHE[cache_key] = result
+    return result
 
 
 def _blend_color(color: tuple[float, float, float, float], amount: float, target: tuple[float, float, float, float] = PANEL_BACKGROUND) -> tuple[float, float, float, float]:
@@ -2447,6 +2508,15 @@ def _multiply_color(color: tuple[float, float, float, float], amount: float) -> 
 
 
 def _entry_base_type_color(entry: NodeSearchEntry) -> tuple[float, float, float, float]:
+    cached = BASE_TYPE_COLOR_CACHE.get(entry.identifier)
+    if cached is not None:
+        return cached
+    result = _entry_base_type_color_uncached(entry)
+    BASE_TYPE_COLOR_CACHE[entry.identifier] = result
+    return result
+
+
+def _entry_base_type_color_uncached(entry: NodeSearchEntry) -> tuple[float, float, float, float]:
     category_parts = [_normalize(part) for part in entry.category.split(" > ") if part.strip()]
     english_parts = [_normalize(part) for part in entry.english.split(" > ") if part.strip()]
     node_type_words = _camel_words(entry.node_type or "").split()
@@ -2621,6 +2691,27 @@ def _word_prefix_tokens_match(text: str, tokens: list[str]) -> bool:
     return all(any(_token_matches_word_prefix(token, word) for word in words) for token in tokens)
 
 
+def _word_prefix_tokens_match_normalized(
+    normalized_text: str,
+    tokens: tuple[str, ...],
+) -> bool:
+    if not tokens or not normalized_text:
+        return False
+
+    words = normalized_text.split()
+
+    if not words:
+        return False
+
+    return all(
+        any(
+            _token_matches_word_prefix(token, word)
+            for word in words
+        )
+        for token in tokens
+    )
+
+
 def _whole_word_tokens_match(text: str, tokens: list[str]) -> bool:
     if not tokens:
         return False
@@ -2660,29 +2751,167 @@ def _pinyin_profile_for_parts(parts: list[str]) -> tuple[str, tuple[int, ...], s
     return _pinyin_profile(text)
 
 
-def _pinyin_match_level(query: str, compact: str, boundaries: tuple[int, ...], initials: str) -> int:
-    compact_query = query.replace(" ", "")
-    if not compact_query or not compact:
+def _bounded_levenshtein(
+    a: str,
+    b: str,
+    max_distance: int = 1,
+) -> int:
+    if a == b:
         return 0
-    if compact == compact_query:
-        return 5
-    if len(compact_query) >= 3 and compact.startswith(compact_query) and len(compact_query) in boundaries:
-        return 4
-    if len(compact_query) >= 4:
-        starts = (0,) + tuple(boundaries[:-1])
-        for start in starts:
-            end = start + len(compact_query)
-            if end > len(compact):
-                continue
-            if compact.startswith(compact_query, start) and end in boundaries:
-                return 3
-    if len(compact_query) >= 4 and compact.startswith(compact_query) and not _is_complete_pinyin_sequence(compact_query):
-        return 3
-    if len(compact_query) >= 2 and compact.startswith(compact_query):
+
+    if not a:
+        return min(len(b), max_distance + 1)
+
+    if not b:
+        return min(len(a), max_distance + 1)
+
+    if abs(len(a) - len(b)) > max_distance:
+        return max_distance + 1
+
+    if len(a) > len(b):
+        a, b = b, a
+
+    previous = list(range(len(a) + 1))
+
+    for i, char_b in enumerate(b, start=1):
+        current = [i]
+        row_min = i
+
+        for j, char_a in enumerate(a, start=1):
+            cost = 0 if char_a == char_b else 1
+
+            value = min(
+                previous[j] + 1,
+                current[j - 1] + 1,
+                previous[j - 1] + cost,
+            )
+
+            current.append(value)
+
+            if value < row_min:
+                row_min = value
+
+        if row_min > max_distance:
+            return max_distance + 1
+
+        previous = current
+
+    return previous[-1]
+
+
+def _chinese_fuzzy_level(
+    query: str,
+    candidate: str,
+) -> int:
+    query = _compact(query)
+    candidate = _compact(candidate)
+
+    if not query or not candidate:
+        return 0
+
+    if len(query) < 3:
+        return 0
+
+    max_distance = 1 if len(query) <= 8 else 2
+
+    if abs(len(query) - len(candidate)) > max_distance:
+        return 0
+
+    distance = _bounded_levenshtein(
+        query,
+        candidate,
+        max_distance=max_distance,
+    )
+
+    if distance == 1:
         return 2
-    if len(compact_query) >= 2 and initials and initials.startswith(compact_query):
-        return 2
+
+    if distance == 2:
+        return 1
+
     return 0
+
+
+def _ordered_compact_match(
+    needle: str,
+    haystack: str,
+) -> bool:
+    if len(needle) < 4 or not haystack:
+        return False
+
+    position = 0
+    skipped = 0
+
+    for char in needle:
+        found = haystack.find(char, position)
+
+        if found < 0:
+            return False
+
+        skipped += max(
+            0,
+            found - position,
+        )
+
+        position = found + 1
+
+    return skipped <= max(
+        4,
+        len(needle) * 2,
+    )
+
+
+def _pinyin_match_level(query: str, compact: str, boundaries: tuple[int, ...], initials: str) -> int:
+    query_forms = _pinyin_query_variants(query)
+
+    if not query_forms or not compact:
+        return 0
+
+    best = 0
+
+    for q in query_forms:
+        if not q:
+            continue
+
+        if compact == q:
+            best = max(best, 5)
+            continue
+
+        if initials == q:
+            best = max(best, 5)
+            continue
+
+        if initials.startswith(q):
+            if len(q) >= 2:
+                best = max(best, 4)
+            else:
+                best = max(best, 1)
+
+        if (
+            len(q) >= 3
+            and compact.startswith(q)
+            and len(q) in boundaries
+        ):
+            best = max(best, 4)
+
+        elif compact.startswith(q):
+            if len(q) >= 2:
+                best = max(best, 3)
+            else:
+                best = max(best, 1)
+
+        if len(q) >= 4:
+            if abs(len(q) - len(compact)) <= 1:
+                distance = _bounded_levenshtein(
+                    q,
+                    compact,
+                    max_distance=1,
+                )
+
+                if distance == 1:
+                    best = max(best, 2)
+
+    return best
 
 
 def _pinyin_syllable_set() -> set[str]:
@@ -2716,94 +2945,280 @@ def _is_plain_ascii_query(query: str) -> bool:
 
 def _query_match_parts(entry: NodeSearchEntry, query: str):
     query = _normalize(query)
-    tokens = query.split()
-    english = _normalize(entry.english)
-    chinese = _normalize(entry.chinese)
-    english_parts = [_normalize(part) for part in entry.english.split(" > ") if part.strip()]
-    chinese_parts = [_normalize(part) for part in entry.chinese.split(" > ") if part.strip()]
-    category_parts = [_normalize(part) for part in entry.category.split(" > ") if part.strip()]
-    category_text = _normalize(entry.category)
-    category_chinese_parts = [COMPOSITOR_CATEGORY_ZH.get(part, "") for part in category_parts]
-    category_chinese_text = _normalize(" ".join(part for part in category_chinese_parts if part))
-    category_pinyin_text = _normalize(" ".join(_pinyin_search_text(part) for part in category_chinese_parts if part))
-    leaf_parts = [parts[-1] for parts in (english_parts, chinese_parts) if parts]
-    root_parts = [parts[0] for parts in (english_parts, chinese_parts) if len(parts) > 1]
+
+    profile = _fast_search_profile(entry)
+
+    tokens = tuple(query.split())
+
+    english = profile.english
+    chinese = profile.chinese
+
+    english_parts = profile.english_parts
+    chinese_parts = profile.chinese_parts
+    category_parts = profile.category_parts
+
+    category_text = profile.category_text
+    category_chinese_text = profile.category_chinese_text
+    category_pinyin_text = profile.category_pinyin_text
+
+    leaf_parts = profile.leaf_parts
+    root_parts = profile.root_parts
+
     compact_query = query.replace(" ", "")
-    compact_leaf_parts = [part.replace(" ", "") for part in leaf_parts]
-    category_match = bool(query and (
-        query in category_parts
-        or any(part.startswith(query) for part in category_parts)
-        or (category_chinese_text and (query in category_chinese_text or any(part.startswith(query) for part in category_chinese_text.split())))
-        or (tokens and category_pinyin_text and all(len(token) >= 3 and token in category_pinyin_text for token in tokens))
-        or _word_prefix_tokens_match(category_text, tokens)
-        or (tokens and all(len(token) >= 4 and token in category_text for token in tokens))
-    ))
-    leaf_exact = any(part == query for part in leaf_parts)
-    leaf_prefix = any(part.startswith(query) for part in leaf_parts)
-    contains_threshold = 2 if re.search(r"[\u4e00-\u9fff]", query) else 4
-    leaf_contains = any(query in part for part in leaf_parts) if len(query) >= contains_threshold else False
-    leaf_compact_exact = bool(compact_query and any(part == compact_query for part in compact_leaf_parts))
-    leaf_compact_prefix = bool(compact_query and any(part.startswith(compact_query) for part in compact_leaf_parts))
-    leaf_compact_contains = bool(len(compact_query) >= contains_threshold and any(compact_query in part for part in compact_leaf_parts))
-    root_exact = any(part == query for part in root_parts)
-    path_text = " ".join([entry.category, entry.english])
-    leaf_word_match = any(_word_prefix_tokens_match(part, tokens) for part in leaf_parts)
-    leaf_whole_word_match = any(_whole_word_tokens_match(part, tokens) for part in leaf_parts)
-    path_word_match = _word_prefix_tokens_match(path_text, tokens)
-    root_word_match = _word_prefix_tokens_match(_path_without_leaf(entry), tokens)
-    leaf_pinyin_level = _pinyin_match_level(
-        compact_query,
-        entry.leaf_pinyin_compact,
-        entry.leaf_pinyin_boundaries,
-        entry.leaf_pinyin_initials,
+
+    compact_leaf_parts = tuple(
+        part.replace(" ", "")
+        for part in leaf_parts
     )
-    for compact, boundaries, initials, _search_text in _alternate_pinyin_profiles(" ".join(chinese_parts[-1:])):
-        leaf_pinyin_level = max(leaf_pinyin_level, _pinyin_match_level(compact_query, compact, boundaries, initials))
-    root_pinyin_level = _pinyin_match_level(
-        compact_query,
-        entry.root_pinyin_compact,
-        entry.root_pinyin_boundaries,
-        entry.root_pinyin_initials,
+
+    category_match = bool(
+        query
+        and (
+            query in category_parts
+            or any(
+                part.startswith(query)
+                for part in category_parts
+            )
+            or (
+                category_chinese_text
+                and (
+                    query in category_chinese_text
+                    or any(
+                        part.startswith(query)
+                        for part in category_chinese_text.split()
+                    )
+                )
+            )
+            or (
+                tokens
+                and category_pinyin_text
+                and all(
+                    len(token) >= 2
+                    and token in category_pinyin_text
+                    for token in tokens
+                )
+            )
+            or _word_prefix_tokens_match_normalized(
+                category_text,
+                tokens,
+            )
+            or (
+                tokens
+                and all(
+                    len(token) >= 2
+                    and token in category_text
+                    for token in tokens
+                )
+            )
+        )
     )
-    for compact, boundaries, initials, _search_text in _alternate_pinyin_profiles(" ".join(chinese_parts[:-1])):
-        root_pinyin_level = max(root_pinyin_level, _pinyin_match_level(compact_query, compact, boundaries, initials))
+
+    leaf_exact = any(
+        part == query
+        for part in leaf_parts
+    )
+
+    leaf_prefix = any(
+        part.startswith(query)
+        for part in leaf_parts
+    )
+
+    if re.search(r"[\u4e00-\u9fff]", query):
+        contains_threshold = 1
+    else:
+        contains_threshold = 4
+
+    leaf_contains = (
+        any(
+            query in part
+            for part in leaf_parts
+        )
+        if len(query) >= contains_threshold
+        else False
+    )
+
+    leaf_compact_exact = bool(
+        compact_query
+        and any(
+            part == compact_query
+            for part in compact_leaf_parts
+        )
+    )
+
+    leaf_compact_prefix = bool(
+        compact_query
+        and any(
+            part.startswith(compact_query)
+            for part in compact_leaf_parts
+        )
+    )
+
+    leaf_compact_contains = bool(
+        len(compact_query) >= contains_threshold
+        and any(
+            compact_query in part
+            for part in compact_leaf_parts
+        )
+    )
+
+    root_exact = any(
+        part == query
+        for part in root_parts
+    )
+
+    leaf_word_match = any(
+        _word_prefix_tokens_match_normalized(
+            part,
+            tokens,
+        )
+        for part in leaf_parts
+    )
+
+    leaf_whole_word_match = any(
+        bool(part)
+        and all(
+            token in set(part.split())
+            for token in tokens
+        )
+        for part in leaf_parts
+    )
+
+    path_word_match = _word_prefix_tokens_match_normalized(
+        profile.path_text,
+        tokens,
+    )
+
+    root_word_match = _word_prefix_tokens_match_normalized(
+        profile.root_path_text,
+        tokens,
+    )
+
+    leaf_pinyin_level = 0
+
+    for compact, boundaries in (
+        (
+            compact,
+            profile.leaf_pinyin_boundaries,
+        )
+        for compact in profile.leaf_pinyin_variants
+    ):
+        leaf_pinyin_level = max(
+            leaf_pinyin_level,
+            _pinyin_match_level(
+                compact_query,
+                compact,
+                boundaries,
+                profile.leaf_pinyin_initials,
+            ),
+        )
+
+    root_pinyin_level = 0
+
+    for compact, boundaries in (
+        (
+            compact,
+            profile.root_pinyin_boundaries,
+        )
+        for compact in profile.root_pinyin_variants
+    ):
+        root_pinyin_level = max(
+            root_pinyin_level,
+            _pinyin_match_level(
+                compact_query,
+                compact,
+                boundaries,
+                profile.root_pinyin_initials,
+            ),
+        )
+
     leaf_pinyin_match = leaf_pinyin_level >= 4
     root_pinyin_match = root_pinyin_level >= 4
+
+    leaf_zh_fuzzy_level = 0
+    root_zh_fuzzy_level = 0
+
+    is_chinese_query = bool(
+        re.search(
+            r"[\u4e00-\u9fff]",
+            query,
+        )
+    )
+
+    if (
+        is_chinese_query
+        and len(compact_query) >= 3
+    ):
+        leaf_zh_fuzzy_level = _chinese_fuzzy_level(
+            compact_query,
+            profile.leaf_chinese_compact,
+        )
+
+        root_zh_fuzzy_level = _chinese_fuzzy_level(
+            compact_query,
+            profile.root_chinese_compact,
+        )
+
     if _chinese_fuzzy_match_enabled():
-        chinese_search_text = _make_chinese_search_text(entry.chinese, entry.label)
-        ordered_leaf_match = any(_ordered_chars_match(query, part) for part in chinese_parts[-1:])
-        ordered_search_match = _ordered_chars_match(query, chinese_search_text)
+        ordered_leaf_match = any(
+            _ordered_compact_match(
+                compact_query,
+                _compact(part),
+            )
+            for part in chinese_parts[-1:]
+        )
+
+        ordered_search_match = _ordered_compact_match(
+            compact_query,
+            _compact(profile.chinese),
+        )
+
     else:
         ordered_leaf_match = False
         ordered_search_match = False
-    is_primary = len(english_parts) <= 1
+
     return {
         "english": english,
         "chinese": chinese,
+
         "english_parts": english_parts,
         "chinese_parts": chinese_parts,
+
         "category_parts": category_parts,
+
         "leaf_parts": leaf_parts,
         "root_parts": root_parts,
+
         "category_match": category_match,
+
         "leaf_exact": leaf_exact,
         "leaf_prefix": leaf_prefix,
         "leaf_contains": leaf_contains,
+
         "leaf_compact_exact": leaf_compact_exact,
         "leaf_compact_prefix": leaf_compact_prefix,
         "leaf_compact_contains": leaf_compact_contains,
+
         "leaf_pinyin_match": leaf_pinyin_match,
         "leaf_pinyin_level": leaf_pinyin_level,
+
         "root_pinyin_match": root_pinyin_match,
         "root_pinyin_level": root_pinyin_level,
+
+        "leaf_zh_fuzzy_level": leaf_zh_fuzzy_level,
+        "root_zh_fuzzy_level": root_zh_fuzzy_level,
+
         "leaf_word_match": leaf_word_match,
         "leaf_whole_word_match": leaf_whole_word_match,
+
         "path_word_match": path_word_match,
         "root_word_match": root_word_match,
+
         "ordered_leaf_match": ordered_leaf_match,
         "ordered_search_match": ordered_search_match,
+
         "root_exact": root_exact,
-        "is_primary": is_primary,
+
+        "is_primary": profile.is_primary,
     }
 
 
@@ -2975,6 +3390,10 @@ def _dynamic_preferred_order(entry: NodeSearchEntry, query: str, match=None) -> 
         return 1_900
     if match["leaf_pinyin_level"] >= 3:
         return 1_950
+    if match.get("leaf_zh_fuzzy_level", 0) >= 2:
+        return 1_980
+    if match.get("leaf_zh_fuzzy_level", 0) == 1:
+        return 1_990
     if match["ordered_leaf_match"]:
         return 2_000
     if match["root_exact"]:
@@ -3027,6 +3446,12 @@ def _leaf_prefix_sort_key(entry: NodeSearchEntry, query: str, match=None) -> tup
         tier = 5
     elif match["leaf_contains"] or match["leaf_compact_contains"]:
         tier = 6
+    elif match.get("leaf_zh_fuzzy_level", 0) >= 2:
+        tier = 7
+    elif match.get("leaf_zh_fuzzy_level", 0) == 1:
+        tier = 8
+    elif match["leaf_pinyin_level"] >= 2:
+        tier = 8
     else:
         tier = 9
 
@@ -3052,12 +3477,9 @@ def _officialish_preferred_order(entry: NodeSearchEntry, query: str, match=None)
     if not preferred:
         return _dynamic_preferred_order(entry, query, match)
 
-    english_parts = [_normalize(part) for part in entry.english.split(" > ") if part.strip()]
-    if not english_parts:
-        return 10_000
-
-    leaf = english_parts[-1]
-    full = " > ".join(english_parts)
+    profile = _fast_search_profile(entry)
+    leaf = profile.leaf_normalized
+    full = profile.full_normalized
     for index, name in enumerate(preferred):
         if " > " in name:
             if full == name or full.endswith(f" > {name}"):
@@ -3069,56 +3491,110 @@ def _officialish_preferred_order(entry: NodeSearchEntry, query: str, match=None)
 
 def _officialish_sort_bucket(entry: NodeSearchEntry, query: str, match=None) -> int:
     match = match or _query_match_parts(entry, query)
-    if match["is_primary"] and (match["leaf_exact"] or match["leaf_compact_exact"]):
+
+    if match["is_primary"] and (
+        match["leaf_exact"]
+        or match["leaf_compact_exact"]
+    ):
         return 0
-    if match["is_primary"] and (match["category_match"] or match["leaf_contains"] or match["leaf_compact_contains"] or match["leaf_pinyin_level"] >= 3):
+
+    if match["is_primary"] and (
+        match["category_match"]
+        or match["leaf_contains"]
+        or match["leaf_compact_contains"]
+        or match["leaf_pinyin_level"] >= 3
+        or match.get("leaf_zh_fuzzy_level", 0) >= 2
+    ):
         return 1
+
     if match["is_primary"]:
         return 2
+
     if match["root_exact"] or match["category_match"]:
         return 3
-    if match["leaf_contains"] or match["leaf_compact_contains"]:
+
+    if (
+        match["leaf_contains"]
+        or match["leaf_compact_contains"]
+        or match["leaf_pinyin_level"] >= 3
+        or match.get("leaf_zh_fuzzy_level", 0) > 0
+    ):
         return 4
-    if match["leaf_pinyin_level"] >= 3:
-        return 4
+
     return 5
 
 
 def _primary_match_order(entry: NodeSearchEntry, query: str, match=None) -> int:
     match = match or _query_match_parts(entry, query)
-    leaf = match["leaf_parts"][0] if match["leaf_parts"] else ""
+
+    leaf = (
+        match["leaf_parts"][0]
+        if match["leaf_parts"]
+        else ""
+    )
+
     category_parts = match["category_parts"]
-    in_leaf = query in leaf or match["leaf_compact_contains"]
-    in_category = query in category_parts or any(part.startswith(query) for part in category_parts)
-    if match["leaf_exact"] or match["leaf_compact_exact"]:
+
+    in_leaf = (
+        query in leaf
+        or match["leaf_compact_contains"]
+    )
+
+    in_category = (
+        query in category_parts
+        or any(
+            part.startswith(query)
+            for part in category_parts
+        )
+    )
+
+    if (
+        match["leaf_exact"]
+        or match["leaf_compact_exact"]
+    ):
         return 0
+
     if match["leaf_pinyin_level"] >= 5:
         return 1
+
     if match["leaf_pinyin_level"] >= 4:
         return 2
+
     if match["leaf_pinyin_level"] >= 3:
         return 3
-    if in_category and in_leaf and not leaf.startswith(query):
+
+    if match.get("leaf_zh_fuzzy_level", 0) >= 2:
         return 4
-    if in_category and in_leaf:
+
+    if match.get("leaf_zh_fuzzy_level", 0) == 1:
         return 5
-    if in_leaf:
+
+    if match["leaf_pinyin_level"] >= 2:
         return 6
-    if in_category:
+
+    if in_category and in_leaf and not leaf.startswith(query):
         return 7
-    return 8
+
+    if in_category and in_leaf:
+        return 8
+
+    if in_leaf:
+        return 9
+
+    if in_category:
+        return 10
+
+    return 11
 
 
 def _deprecated_sort_penalty(entry: NodeSearchEntry, query: str) -> int:
     query = _normalize(query)
     if not query:
         return 0
-    category = _normalize(entry.category)
-    if "deprecated" not in category:
+    profile = _fast_search_profile(entry)
+    if "deprecated" not in profile.category_normalized:
         return 0
-    english = _normalize(entry.english)
-    chinese = _normalize(entry.chinese)
-    if query in english or query in chinese or any(part.startswith(query) for part in (english.split() + chinese.split())):
+    if query in profile.full_normalized or query in profile.leaf_normalized:
         return 1
     return 0
 
@@ -3667,9 +4143,343 @@ def _make_search_text(english: str, chinese: str, label: str, node_type: str) ->
     return _normalize(" ".join(piece for piece in pieces if piece))
 
 
+# ============================================================
+# Fast Search Index
+# ============================================================
+
+@dataclass(frozen=True)
+class FastSearchProfile:
+    identifier: str
+
+    english: str
+    chinese: str
+    category: str
+
+    english_parts: tuple[str, ...]
+    chinese_parts: tuple[str, ...]
+    category_parts: tuple[str, ...]
+
+    category_text: str
+    category_chinese_parts: tuple[str, ...]
+    category_chinese_text: str
+    category_pinyin_text: str
+
+    leaf_parts: tuple[str, ...]
+    root_parts: tuple[str, ...]
+
+    leaf_chinese_compact: str
+    root_chinese_compact: str
+
+    path_text: str
+    root_path_text: str
+
+    leaf_pinyin_compact: str
+    leaf_pinyin_variants: tuple[str, ...]
+    leaf_pinyin_boundaries: tuple[int, ...]
+    leaf_pinyin_initials: str
+
+    root_pinyin_compact: str
+    root_pinyin_variants: tuple[str, ...]
+    root_pinyin_boundaries: tuple[int, ...]
+    root_pinyin_initials: str
+
+    is_primary: bool
+
+
+PINYIN_UV_ALIASES = (
+    ("yue", "yve"),
+    ("yuan", "yvan"),
+    ("yun", "yvn"),
+    ("yu", "yv"),
+    ("lue", "lve"),
+    ("lv", "lu"),
+    ("nue", "nve"),
+    ("nv", "nu"),
+)
+
+
+def _pinyin_query_variants(query: str) -> tuple[str, ...]:
+    compact = _compact(query)
+    if not compact:
+        return ()
+
+    variants = {compact}
+
+    for a, b in PINYIN_UV_ALIASES:
+        if a in compact:
+            variants.add(compact.replace(a, b))
+        if b in compact:
+            variants.add(compact.replace(b, a))
+
+    return tuple(variants)
+
+
+def _pinyin_forms(compact: str) -> tuple[str, ...]:
+    if not compact:
+        return ()
+
+    forms = {compact}
+
+    for a, b in PINYIN_UV_ALIASES:
+        if a in compact:
+            forms.add(compact.replace(a, b))
+        if b in compact:
+            forms.add(compact.replace(b, a))
+
+    return tuple(forms)
+
+
+def _build_fast_search_profile(entry: NodeSearchEntry) -> FastSearchProfile:
+    english_parts = tuple(
+        _normalize(part)
+        for part in entry.english.split(" > ")
+        if part.strip()
+    )
+
+    chinese_parts = tuple(
+        _normalize(part)
+        for part in entry.chinese.split(" > ")
+        if part.strip()
+    )
+
+    category_parts = tuple(
+        _normalize(part)
+        for part in entry.category.split(" > ")
+        if part.strip()
+    )
+
+    category_text = _normalize(entry.category)
+
+    category_chinese_parts = tuple(
+        _normalize(COMPOSITOR_CATEGORY_ZH.get(part, ""))
+        for part in category_parts
+        if COMPOSITOR_CATEGORY_ZH.get(part, "")
+    )
+
+    category_chinese_text = _normalize(
+        " ".join(category_chinese_parts)
+    )
+
+    category_pinyin_text = _normalize(
+        " ".join(
+            _pinyin_search_text(part)
+            for part in category_chinese_parts
+            if part
+        )
+    )
+
+    leaf_parts_list = []
+    root_parts_list = []
+
+    if english_parts:
+        leaf_parts_list.append(english_parts[-1])
+
+    if chinese_parts:
+        leaf_parts_list.append(chinese_parts[-1])
+
+    if len(english_parts) > 1:
+        root_parts_list.append(english_parts[0])
+
+    if len(chinese_parts) > 1:
+        root_parts_list.append(chinese_parts[0])
+
+    leaf_parts = tuple(leaf_parts_list)
+    root_parts = tuple(root_parts_list)
+
+    leaf_chinese = chinese_parts[-1] if chinese_parts else ""
+    root_chinese = chinese_parts[0] if len(chinese_parts) > 1 else ""
+
+    leaf_chinese_compact = _compact(leaf_chinese)
+    root_chinese_compact = _compact(root_chinese)
+
+    path_text = _normalize(
+        " ".join(
+            item
+            for item in (
+                entry.category,
+                entry.english,
+                entry.chinese,
+            )
+            if item
+        )
+    )
+
+    if len(english_parts) > 1:
+        root_path_text = " > ".join(english_parts[:-1])
+    else:
+        root_path_text = entry.english
+
+    leaf_pinyin_compact = entry.leaf_pinyin_compact or ""
+    root_pinyin_compact = entry.root_pinyin_compact or ""
+
+    leaf_pinyin_variants = _pinyin_forms(leaf_pinyin_compact)
+    root_pinyin_variants = _pinyin_forms(root_pinyin_compact)
+
+    return FastSearchProfile(
+        identifier=entry.identifier,
+
+        english=_normalize(entry.english),
+        chinese=_normalize(entry.chinese),
+        category=_normalize(entry.category),
+
+        english_parts=english_parts,
+        chinese_parts=chinese_parts,
+        category_parts=category_parts,
+
+        category_text=category_text,
+        category_chinese_parts=category_chinese_parts,
+        category_chinese_text=category_chinese_text,
+        category_pinyin_text=category_pinyin_text,
+
+        leaf_parts=leaf_parts,
+        root_parts=root_parts,
+
+        leaf_chinese_compact=leaf_chinese_compact,
+        root_chinese_compact=root_chinese_compact,
+
+        path_text=path_text,
+        root_path_text=_normalize(root_path_text),
+
+        leaf_pinyin_compact=leaf_pinyin_compact,
+        leaf_pinyin_variants=leaf_pinyin_variants,
+        leaf_pinyin_boundaries=entry.leaf_pinyin_boundaries,
+        leaf_pinyin_initials=entry.leaf_pinyin_initials,
+
+        root_pinyin_compact=root_pinyin_compact,
+        root_pinyin_variants=root_pinyin_variants,
+        root_pinyin_boundaries=entry.root_pinyin_boundaries,
+        root_pinyin_initials=entry.root_pinyin_initials,
+
+        is_primary=len(english_parts) <= 1,
+    )
+
+
+class FastSearchIndex:
+    def __init__(self, entries: list[NodeSearchEntry]):
+        self.entries = entries
+
+        self.char_index: dict[str, set[int]] = {}
+        self.gram2_index: dict[str, set[int]] = {}
+
+        self.profiles: dict[str, FastSearchProfile] = {}
+
+        for index, entry in enumerate(entries):
+            profile = _build_fast_search_profile(entry)
+            self.profiles[entry.identifier] = profile
+
+            values = (
+                entry.search_text,
+                profile.english,
+                profile.chinese,
+                profile.category_text,
+                profile.category_chinese_text,
+                profile.category_pinyin_text,
+                *profile.english_parts,
+                *profile.chinese_parts,
+                *profile.leaf_pinyin_variants,
+                *profile.root_pinyin_variants,
+                profile.leaf_pinyin_initials,
+                profile.root_pinyin_initials,
+            )
+
+            seen_values = set()
+
+            for value in values:
+                compact = _compact(value)
+
+                if not compact or compact in seen_values:
+                    continue
+
+                seen_values.add(compact)
+
+                for char in compact:
+                    self.char_index.setdefault(char, set()).add(index)
+
+                if len(compact) >= 2:
+                    for pos in range(len(compact) - 1):
+                        gram = compact[pos:pos + 2]
+                        self.gram2_index.setdefault(gram, set()).add(index)
+
+        self.char_index = {
+            key: set_value
+            for key, set_value in self.char_index.items()
+        }
+
+        self.gram2_index = {
+            key: set_value
+            for key, set_value in self.gram2_index.items()
+        }
+
+    def candidates(self, query: str, fuzzy: bool = False):
+        compact_query = _compact(query)
+
+        if not compact_query:
+            return ()
+
+        if len(compact_query) == 1:
+            return tuple(
+                sorted(
+                    self.char_index.get(compact_query, ())
+                )
+            )
+
+        candidates = set(
+            self.gram2_index.get(
+                compact_query[:2],
+                ()
+            )
+        )
+
+        if fuzzy and len(compact_query) >= 4:
+            candidates.update(
+                self.gram2_index.get(
+                    compact_query[-2:],
+                    ()
+                )
+            )
+
+        return tuple(sorted(candidates))
+
+    def all_indices(self):
+        return range(len(self.entries))
+
+
+def _fast_search_profile(entry: NodeSearchEntry) -> FastSearchProfile:
+    profile = FAST_SEARCH_PROFILES.get(entry.identifier)
+    if profile is not None:
+        return profile
+
+    profile = _build_fast_search_profile(entry)
+    FAST_SEARCH_PROFILES[entry.identifier] = profile
+    return profile
+
+
+def _build_fast_search_index():
+    global FAST_SEARCH_INDEX
+
+    FAST_SEARCH_PROFILES.clear()
+
+    FAST_SEARCH_INDEX = FastSearchIndex(
+        NODE_SEARCH_ENTRIES
+    )
+
+    FAST_SEARCH_PROFILES.update(
+        FAST_SEARCH_INDEX.profiles
+    )
+
+
 def _rebuild_search_entries(context):
+    global FAST_SEARCH_INDEX
+
     NODE_SEARCH_ENTRIES.clear()
     NODE_ENTRY_BY_ID.clear()
+
+    FAST_SEARCH_INDEX = None
+    FAST_SEARCH_PROFILES.clear()
+
+    DISPLAY_PARTS_CACHE.clear()
+    DISPLAY_CATEGORY_CACHE.clear()
+    BASE_TYPE_COLOR_CACHE.clear()
 
     seen_keys = set()
 
@@ -3898,6 +4708,7 @@ def _rebuild_search_entries(context):
         add_zone_entries()
         add_asset_library_entries()
         add_local_groups()
+        _build_fast_search_index()
         return
 
     add_compositor_manual_entries()
@@ -3912,101 +4723,260 @@ def _rebuild_search_entries(context):
     _save_search_index_cache(context, cacheable_entries)
     add_local_groups()
 
+    _build_fast_search_index()
+
 
 def _score_entry(entry: NodeSearchEntry, query: str, favorites: set[str], allow_weak_pinyin: bool = False, match=None) -> int | None:
     query = _normalize(query)
+
     if not query:
         return None
+
+    match = match or _query_match_parts(
+        entry,
+        query,
+    )
 
     text = entry.search_text
     compact_text = text.replace(" ", "")
     compact_query = query.replace(" ", "")
-    tokens = query.split()
+    tokens = tuple(query.split())
 
-    match = match or _query_match_parts(entry, query)
     english = match["english"]
     chinese = match["chinese"]
-    english_parts = match["english_parts"]
-    chinese_parts = match["chinese_parts"]
-    category_match = match["category_match"]
-    all_parts = english_parts + chinese_parts
 
-    preferred_order = _officialish_preferred_order(entry, query, match)
-    # Compact matching is intentionally narrow. Without this guard, short queries
-    # can match across word boundaries, for example "set" in "Noise Texture".
-    compact_match = bool(len(compact_query) >= 5 and " " in query and compact_query in compact_text)
-    plain_ascii_query = _is_plain_ascii_query(query)
-    broad_text_match = bool(tokens and all(len(token) >= 4 and token in text for token in tokens))
+    category_match = match["category_match"]
+
+    all_parts = (
+        match["english_parts"]
+        + match["chinese_parts"]
+    )
+
+    preferred_order = _officialish_preferred_order(
+        entry,
+        query,
+        match,
+    )
+
+    compact_match = bool(
+        len(compact_query) >= 5
+        and " " in query
+        and compact_query in compact_text
+    )
+
+    plain_ascii_query = _is_plain_ascii_query(
+        query
+    )
+
+    broad_text_match = bool(
+        tokens
+        and all(
+            len(token) >= 4
+            and token in text
+            for token in tokens
+        )
+    )
+
     if plain_ascii_query:
-        pinyin_threshold = 2 if allow_weak_pinyin else 3
-        broad_text_match = match["leaf_pinyin_level"] >= pinyin_threshold or bool(tokens and all(len(token) >= 4 and token in " ".join(match["leaf_parts"]) for token in tokens))
+        pinyin_threshold = (
+            1 if allow_weak_pinyin else 3
+        )
+
+        broad_text_match = (
+            match["leaf_pinyin_level"]
+            >= pinyin_threshold
+            or bool(
+                tokens
+                and all(
+                    len(token) >= 4
+                    and token
+                    in " ".join(
+                        match["leaf_parts"]
+                    )
+                    for token in tokens
+                )
+            )
+        )
+
     if preferred_order < 10_000:
         score = 110
-    elif match["leaf_compact_exact"] or match["leaf_compact_prefix"] or match["leaf_compact_contains"] or broad_text_match:
+
+    elif (
+        match["leaf_compact_exact"]
+        or match["leaf_compact_prefix"]
+        or match["leaf_compact_contains"]
+    ):
         score = 100
+
+    elif (
+        plain_ascii_query
+        and match["leaf_pinyin_level"] >= 3
+    ):
+        score = 100
+
+    elif (
+        plain_ascii_query
+        and match["leaf_pinyin_level"] >= 1
+    ):
+        score = 62
+
     elif category_match:
         score = 90
+
+    elif (
+        match.get("leaf_zh_fuzzy_level", 0) > 0
+        or match.get("root_zh_fuzzy_level", 0) > 0
+    ):
+        score = 68
+
     elif compact_match:
         score = 80
-    elif match["ordered_leaf_match"] or match["ordered_search_match"]:
+
+    elif (
+        match["ordered_leaf_match"]
+        or match["ordered_search_match"]
+    ):
         score = 72
+
     else:
         return None
 
     if english == query:
         score += 1300
+
     elif chinese == query:
         score += 1300
+
     elif english.startswith(query):
         score += 450
+
     elif chinese.startswith(query):
         score += 450
+
     elif query in english:
         score += 250
+
     elif query in chinese:
         score += 250
 
     if all_parts:
         leaf_parts = match["leaf_parts"]
-        root_parts = match["root_parts"]
-        display_depth = _entry_display_depth(entry)
-        if match["leaf_exact"] or match["leaf_compact_exact"]:
+
+        display_depth = _entry_display_depth(
+            entry
+        )
+
+        if (
+            match["leaf_exact"]
+            or match["leaf_compact_exact"]
+        ):
             score += 760
+
         elif match["leaf_whole_word_match"]:
             score += 320
-        elif match["leaf_prefix"] or match["leaf_compact_prefix"]:
+
+        elif (
+            match["leaf_prefix"]
+            or match["leaf_compact_prefix"]
+        ):
             score += 260
+
         elif match["root_exact"]:
             score += 100
-        elif match["leaf_contains"] or match["leaf_compact_contains"] or match["leaf_pinyin_match"] or match["leaf_pinyin_level"] >= (2 if allow_weak_pinyin else 3):
+
+        elif (
+            match["leaf_contains"]
+            or match["leaf_compact_contains"]
+        ):
             score += 180
+
+        elif match["leaf_pinyin_level"] >= 3:
+            score += 180
+
             if match["leaf_pinyin_level"] >= 5:
                 score += 40
+
             elif match["leaf_pinyin_level"] >= 4:
                 score += 20
+
             elif match["leaf_pinyin_level"] >= 3:
                 score += 10
-            elif match["leaf_pinyin_level"] >= 2:
-                score += 4
+
+        elif match["leaf_pinyin_level"] == 2:
+            score += 70
+
+        elif match["leaf_pinyin_level"] == 1:
+            score += 15
+
+        elif (
+            match.get("leaf_zh_fuzzy_level", 0)
+            >= 2
+        ):
+            score += 120
+
+        elif (
+            match.get("leaf_zh_fuzzy_level", 0)
+            == 1
+        ):
+            score += 70
+
         elif match["ordered_leaf_match"]:
             score += 130
+
         elif match["ordered_search_match"]:
             score += 70
 
         is_primary_entry = match["is_primary"]
+
         if is_primary_entry and category_match:
             score += 520
+
         elif category_match:
             score += 40
-        if is_primary_entry and (match["leaf_contains"] or match["leaf_compact_contains"]):
+
+        if is_primary_entry and (
+            match["leaf_contains"]
+            or match["leaf_compact_contains"]
+        ):
             score += 360
 
-        if match["leaf_exact"] or match["leaf_prefix"] or match["leaf_compact_exact"] or match["leaf_compact_prefix"]:
-            score += max(0, 7 - display_depth) * 95
-        elif match["leaf_contains"] or match["leaf_compact_contains"] or match["ordered_leaf_match"]:
-            score += max(0, 7 - display_depth) * 45
-        elif match["leaf_pinyin_level"] >= (2 if allow_weak_pinyin else 3):
-            score += max(0, 7 - display_depth) * 40
+        if (
+            match["leaf_exact"]
+            or match["leaf_prefix"]
+            or match["leaf_compact_exact"]
+            or match["leaf_compact_prefix"]
+        ):
+            score += max(
+                0,
+                7 - display_depth,
+            ) * 95
+
+        elif (
+            match["leaf_contains"]
+            or match["leaf_compact_contains"]
+            or match["ordered_leaf_match"]
+        ):
+            score += max(
+                0,
+                7 - display_depth,
+            ) * 45
+
+        elif (
+            match["leaf_pinyin_level"] >= 3
+        ):
+            score += max(
+                0,
+                7 - display_depth,
+            ) * 40
+
+        elif (
+            match.get("leaf_zh_fuzzy_level", 0)
+            > 0
+        ):
+            score += max(
+                0,
+                7 - display_depth,
+            ) * 18
 
     if entry.identifier in favorites:
         score += 60
@@ -4017,47 +4987,207 @@ def _score_entry(entry: NodeSearchEntry, query: str, favorites: set[str], allow_
 def _search_entries(query: str, favorites: set[str]) -> list[NodeSearchEntry]:
     normalized_query = _normalize(query)
 
-    def collect(allow_weak_pinyin: bool = False):
-        scored_entries = []
-        for index, entry in enumerate(NODE_SEARCH_ENTRIES):
-            match = _query_match_parts(entry, normalized_query)
-            score = _score_entry(entry, normalized_query, favorites, allow_weak_pinyin=allow_weak_pinyin, match=match)
+    if not normalized_query:
+        return []
+
+    global FAST_SEARCH_INDEX
+
+    if FAST_SEARCH_INDEX is None:
+        _build_fast_search_index()
+
+    if FAST_SEARCH_INDEX is None:
+        candidate_indices = range(
+            len(NODE_SEARCH_ENTRIES)
+        )
+    else:
+        candidate_indices = (
+            FAST_SEARCH_INDEX.candidates(
+                normalized_query,
+                fuzzy=False,
+            )
+        )
+
+    def collect(indices):
+        result_map = {}
+
+        for index in indices:
+            if index >= len(NODE_SEARCH_ENTRIES):
+                continue
+
+            entry = NODE_SEARCH_ENTRIES[index]
+
+            match = _query_match_parts(
+                entry,
+                normalized_query,
+            )
+
+            score = _score_entry(
+                entry,
+                normalized_query,
+                favorites,
+                allow_weak_pinyin=True,
+                match=match,
+            )
+
             if score is None:
                 continue
-            strong_favorite = entry.identifier in favorites and (
-                match["leaf_exact"]
-                or match["leaf_prefix"]
-                or match["leaf_contains"]
-                or match["leaf_compact_exact"]
-                or match["leaf_compact_prefix"]
-                or match["leaf_compact_contains"]
-                or match["leaf_whole_word_match"]
-                or match["leaf_word_match"]
-                or match["leaf_pinyin_level"] >= (2 if allow_weak_pinyin else 3)
-                or match["root_exact"]
-            )
-            bucket = _officialish_sort_bucket(entry, normalized_query, match)
-            primary_order = _primary_match_order(entry, normalized_query, match)
-            preferred_order = _officialish_preferred_order(entry, normalized_query, match)
-            scored_entries.append((score, entry.identifier in favorites, strong_favorite, entry.english.lower(), index, bucket, primary_order, preferred_order, entry, match))
-        return scored_entries
 
-    scored = collect()
-    if not scored and _is_plain_ascii_query(query):
-        scored = collect(allow_weak_pinyin=True)
+            strong_favorite = (
+                entry.identifier in favorites
+                and (
+                    match["leaf_exact"]
+                    or match["leaf_prefix"]
+                    or match["leaf_contains"]
+                    or match["leaf_compact_exact"]
+                    or match["leaf_compact_prefix"]
+                    or match["leaf_compact_contains"]
+                    or match["leaf_whole_word_match"]
+                    or match["leaf_word_match"]
+                    or match["leaf_pinyin_level"] >= 2
+                    or match.get(
+                        "leaf_zh_fuzzy_level",
+                        0,
+                    ) >= 2
+                    or match["root_exact"]
+                )
+            )
+
+            bucket = _officialish_sort_bucket(
+                entry,
+                normalized_query,
+                match,
+            )
+
+            primary_order = _primary_match_order(
+                entry,
+                normalized_query,
+                match,
+            )
+
+            preferred_order = _officialish_preferred_order(
+                entry,
+                normalized_query,
+                match,
+            )
+
+            result_map[entry.identifier] = (
+                score,
+                entry.identifier in favorites,
+                strong_favorite,
+                entry.english.lower(),
+                index,
+                bucket,
+                primary_order,
+                preferred_order,
+                entry,
+                match,
+            )
+
+        return result_map
+
+    scored_map = collect(
+        candidate_indices
+    )
+
+    if (
+        len(scored_map) < MAX_RESULTS
+        and len(normalized_query.replace(" ", "")) >= 4
+        and FAST_SEARCH_INDEX is not None
+    ):
+        fuzzy_indices = FAST_SEARCH_INDEX.candidates(
+            normalized_query,
+            fuzzy=True,
+        )
+
+        fuzzy_results = collect(
+            fuzzy_indices
+        )
+
+        scored_map.update(
+            fuzzy_results
+        )
+
+    if (
+        len(scored_map) < MAX_RESULTS
+        and len(normalized_query.replace(" ", "")) >= 4
+    ):
+        all_results = collect(
+            range(
+                len(NODE_SEARCH_ENTRIES)
+            )
+        )
+
+        scored_map.update(
+            all_results
+        )
+
+    scored = list(
+        scored_map.values()
+    )
 
     def sort_key(item):
         entry = item[8]
         match = item[9]
-        output_sort = entry.english.lower() if _has_visible_output_setting(entry) and match["root_word_match"] else ""
-        leaf_sort = _leaf_prefix_sort_key(entry, normalized_query, match)
-        deprecated_penalty = _deprecated_sort_penalty(entry, normalized_query)
-        if _officialish_query_key(normalized_query):
-            return (item[7], not item[2], deprecated_penalty, leaf_sort, item[5], item[6], output_sort, not item[1], item[4], -item[0], item[3])
-        return (not item[2], item[7], deprecated_penalty, leaf_sort, item[5], item[6], output_sort, not item[1], item[4], -item[0], item[3])
 
-    scored.sort(key=sort_key)
-    return [item[8] for item in scored]
+        output_sort = (
+            entry.english.lower()
+            if (
+                _has_visible_output_setting(entry)
+                and match["root_word_match"]
+            )
+            else ""
+        )
+
+        leaf_sort = _leaf_prefix_sort_key(
+            entry,
+            normalized_query,
+            match,
+        )
+
+        deprecated_penalty = _deprecated_sort_penalty(
+            entry,
+            normalized_query,
+        )
+
+        if _officialish_query_key(
+            normalized_query
+        ):
+            return (
+                item[7],
+                not item[2],
+                deprecated_penalty,
+                leaf_sort,
+                item[5],
+                item[6],
+                output_sort,
+                not item[1],
+                item[4],
+                -item[0],
+                item[3],
+            )
+
+        return (
+            not item[2],
+            item[7],
+            deprecated_penalty,
+            leaf_sort,
+            item[5],
+            item[6],
+            output_sort,
+            not item[1],
+            item[4],
+            -item[0],
+            item[3],
+        )
+
+    scored.sort(
+        key=sort_key
+    )
+
+    return [
+        item[8]
+        for item in scored
+    ]
 
 
 def _store_cursor_location(context, event):
@@ -4170,6 +5300,111 @@ def _uniform_shader():
     return GPU_UNIFORM_SHADER
 
 
+def _get_fade_batch(width, height, steps=10):
+    key = (
+        round(width, 2),
+        round(height, 2),
+        steps,
+    )
+
+    if key in FADE_BATCH_CACHE:
+        return FADE_BATCH_CACHE[key]
+
+    shader = _uniform_shader()
+    vertices = []
+    step_width = width / steps
+
+    for step in range(steps):
+        x0 = step * step_width
+        x1 = x0 + step_width + 1
+        vertices.extend(
+            (
+                (x0, 0),
+                (x1, 0),
+                (x1, height),
+                (x0, 0),
+                (x1, height),
+                (x0, height),
+            )
+        )
+
+    batch = batch_for_shader(
+        shader,
+        "TRIS",
+        {"pos": vertices},
+    )
+
+    FADE_BATCH_CACHE[key] = batch
+    return batch
+
+
+def _get_rounded_rect_batch(x, y, width, height, radius, segments=8):
+    key = (
+        round(x, 2),
+        round(y, 2),
+        round(width, 2),
+        round(height, 2),
+        round(radius, 2),
+        segments,
+    )
+
+    if key in RECT_BATCH_CACHE:
+        return RECT_BATCH_CACHE[key]
+
+    shader = _uniform_shader()
+    vertices = _rounded_rect_vertices(x, y, width, height, radius, segments)
+
+    batch = batch_for_shader(
+        shader,
+        "TRI_FAN",
+        {"pos": vertices},
+    )
+
+    RECT_BATCH_CACHE[key] = batch
+    return batch
+
+
+def _flat_color_shader():
+    global GPU_FLAT_COLOR_SHADER
+    if GPU_FLAT_COLOR_SHADER is None:
+        GPU_FLAT_COLOR_SHADER = gpu.shader.from_builtin("2D_FLAT_COLOR")
+    return GPU_FLAT_COLOR_SHADER
+
+
+class _FastShapeBatch2D:
+    def __init__(self, draw_type: str = "TRI_FAN"):
+        self.vertices: list[tuple[float, float]] = []
+        self.colors: list[tuple[float, float, float, float]] = []
+        self.draw_type = draw_type
+
+    def add_quad(self, x: float, y: float, width: float, height: float, color: tuple[float, float, float, float]):
+        self.vertices.extend([
+            (x, y),
+            (x + width, y),
+            (x + width, y + height),
+            (x, y + height),
+        ])
+        self.colors.extend([color] * 4)
+
+    def flush(self):
+        if not self.vertices:
+            return
+
+        shader = _flat_color_shader()
+        batch = batch_for_shader(
+            shader,
+            self.draw_type,
+            {"pos": self.vertices},
+            {"color": self.colors},
+        )
+
+        shader.bind()
+        batch.draw(shader)
+
+        self.vertices.clear()
+        self.colors.clear()
+
+
 def _draw_rect(x: float, y: float, width: float, height: float, color: tuple[float, float, float, float]):
     shader = _uniform_shader()
     vertices = ((x, y), (x + width, y), (x + width, y + height), (x, y + height))
@@ -4188,13 +5423,20 @@ def _draw_horizontal_fade(x: float, y: float, width: float, height: float, color
         previous_blend = gpu.state.blend_get()
         gpu.state.blend_set("ALPHA")
     except Exception:
-        previous_blend = None
+        pass
 
     try:
-        step_width = width / steps
-        for step in range(steps):
-            alpha = color[3] * ((step + 1) / steps)
-            _draw_rect(x + step * step_width, y, step_width + 1, height, (color[0], color[1], color[2], alpha))
+        shader = _uniform_shader()
+        batch = _get_fade_batch(width, height, steps)
+
+        shader.bind()
+        shader.uniform_float("color", color)
+
+        gpu.matrix.push()
+        gpu.matrix.translate((x, y, 0))
+        batch.draw(shader)
+        gpu.matrix.pop()
+
     finally:
         try:
             gpu.state.blend_set(previous_blend if previous_blend is not None else "NONE")
@@ -4241,7 +5483,7 @@ def _draw_rounded_rect(
     color: tuple[float, float, float, float],
 ):
     shader = _uniform_shader()
-    batch = batch_for_shader(shader, "TRI_FAN", {"pos": _rounded_rect_vertices(x, y, width, height, radius)})
+    batch = _get_rounded_rect_batch(x, y, width, height, radius)
     previous_blend = None
     if color[3] < 1.0:
         try:
@@ -4412,6 +5654,11 @@ class ENS_AddNodeByEnglishSearch(Operator):
     _owner_space = None
     _owner_tree = None
     _snippet_mode = False
+    _cursor = 0
+    _selection_anchor = None
+    _mouse_selecting = False
+    _search_text_x = 0.0
+    _search_text_size = 13
 
     @classmethod
     def poll(cls, context):
@@ -4643,8 +5890,197 @@ class ENS_AddNodeByEnglishSearch(Operator):
         if context.area:
             context.area.tag_redraw()
 
+    def _selection_range(self):
+        anchor = self._selection_anchor
+        if anchor is None or anchor == self._cursor:
+            return None
+        return (anchor, self._cursor) if anchor < self._cursor else (self._cursor, anchor)
+
+    def _reset_after_edit(self):
+        self._selected_index = 0
+        self._scroll_offset = 0
+        self._scroll_remainder = 0.0
+        self._hovered_result_index = None
+        self._keyboard_selection_active = False
+        self._refresh_results()
+
+    def _insert_text(self, text: str):
+        if not text:
+            return
+        rng = self._selection_range()
+        if rng:
+            self._query = self._query[:rng[0]] + text + self._query[rng[1]:]
+            self._cursor = rng[0] + len(text)
+        else:
+            self._query = self._query[:self._cursor] + text + self._query[self._cursor:]
+            self._cursor += len(text)
+        self._selection_anchor = None
+        self._reset_after_edit()
+
+    def _delete_range(self, start: int, end: int):
+        if start >= end:
+            return
+        self._query = self._query[:start] + self._query[end:]
+        self._cursor = start
+        self._selection_anchor = None
+        self._reset_after_edit()
+
+    def _word_boundary_left(self, pos: int) -> int:
+        text = self._query
+        i = pos
+        while i > 0 and text[i - 1].isspace():
+            i -= 1
+        while i > 0 and not text[i - 1].isspace():
+            i -= 1
+        return i
+
+    def _word_boundary_right(self, pos: int) -> int:
+        text = self._query
+        n = len(text)
+        i = pos
+        while i < n and text[i].isspace():
+            i += 1
+        while i < n and not text[i].isspace():
+            i += 1
+        return i
+
+    def _handle_text_edit_key(self, context, event) -> bool:
+        ctrl = bool(event.ctrl or event.oskey)
+        shift = bool(event.shift)
+        key = event.type
+
+        # --- Ctrl 组合 ---
+        if ctrl and not event.alt:
+            if key == "A":
+                self._selection_anchor = 0
+                self._cursor = len(self._query)
+                return True
+            if key == "C":
+                rng = self._selection_range()
+                if rng:
+                    try:
+                        context.window_manager.clipboard = self._query[rng[0]:rng[1]]
+                    except Exception:
+                        pass
+                return True
+            if key == "X":
+                rng = self._selection_range()
+                if rng:
+                    try:
+                        context.window_manager.clipboard = self._query[rng[0]:rng[1]]
+                    except Exception:
+                        pass
+                    self._delete_range(rng[0], rng[1])
+                return True
+            if key == "V":
+                try:
+                    clipboard = context.window_manager.clipboard
+                except Exception:
+                    clipboard = ""
+                if clipboard:
+                    self._insert_text(clipboard)
+                return True
+            if key == "BACK_SPACE":
+                if self._snippet_mode and not self._query:
+                    return False
+                rng = self._selection_range()
+                if rng:
+                    self._delete_range(rng[0], rng[1])
+                elif self._cursor > 0:
+                    self._delete_range(self._word_boundary_left(self._cursor), self._cursor)
+                return True
+            if key in {"DEL", "FORWARD_DEL"}:
+                if self._snippet_mode and not self._query:
+                    return False
+                rng = self._selection_range()
+                if rng:
+                    self._delete_range(rng[0], rng[1])
+                else:
+                    self._delete_range(self._cursor, self._word_boundary_right(self._cursor))
+                return True
+            return False
+
+        # --- 普通编辑键 ---
+        if key == "BACK_SPACE":
+            if self._snippet_mode and not self._query:
+                return False
+            rng = self._selection_range()
+            if rng:
+                self._delete_range(rng[0], rng[1])
+            elif self._cursor > 0:
+                self._delete_range(self._cursor - 1, self._cursor)
+            return True
+
+        if key in {"DEL", "FORWARD_DEL"}:
+            if self._snippet_mode and not self._query:
+                return False
+            rng = self._selection_range()
+            if rng:
+                self._delete_range(rng[0], rng[1])
+            elif self._cursor < len(self._query):
+                self._delete_range(self._cursor, self._cursor + 1)
+            return True
+
+        if key == "LEFT_ARROW":
+            if shift and self._selection_anchor is None:
+                self._selection_anchor = self._cursor
+            if self._cursor > 0:
+                self._cursor -= 1
+            if not shift:
+                self._selection_anchor = None
+            return True
+
+        if key == "RIGHT_ARROW":
+            if shift and self._selection_anchor is None:
+                self._selection_anchor = self._cursor
+            if self._cursor < len(self._query):
+                self._cursor += 1
+            if not shift:
+                self._selection_anchor = None
+            return True
+
+        if key == "HOME":
+            if shift and self._selection_anchor is None:
+                self._selection_anchor = self._cursor
+            self._cursor = 0
+            if not shift:
+                self._selection_anchor = None
+            return True
+
+        if key == "END":
+            if shift and self._selection_anchor is None:
+                self._selection_anchor = self._cursor
+            self._cursor = len(self._query)
+            if not shift:
+                self._selection_anchor = None
+            return True
+
+        return False
+
+    def _search_field_from_mouse(self, event) -> bool:
+        x, y, width, height = self._search_field_rect
+        if width <= 0 or height <= 0:
+            return False
+        return x <= event.mouse_region_x <= x + width and y <= event.mouse_region_y <= y + height
+
+    def _set_cursor_from_mouse(self, event):
+        if self._search_text_size <= 0:
+            return
+        rel = event.mouse_region_x - self._search_text_x
+        if rel <= 0:
+            self._cursor = 0
+            return
+        for i in range(1, len(self._query) + 1):
+            if _text_width(self._query[:i], self._search_text_size) >= rel:
+                self._cursor = i
+                return
+        self._cursor = len(self._query)
+
     def _clear_query(self):
         self._query = ""
+        self._cursor = 0
+        self._selection_anchor = None
+        self._mouse_selecting = False
         self._selected_index = 0
         self._scroll_offset = 0
         self._scroll_remainder = 0.0
@@ -4857,6 +6293,9 @@ class ENS_AddNodeByEnglishSearch(Operator):
         self._resize_handle_hover = False
         self._resize_live_width = None
         self._snippet_mode = False
+        self._cursor = 0
+        self._selection_anchor = None
+        self._mouse_selecting = False
         self._refresh_results()
         self._draw_handler = SpaceNodeEditor.draw_handler_add(self._draw_callback, (context,), "WINDOW", "POST_PIXEL")
         self._timer = context.window_manager.event_timer_add(0.2, window=context.window)
@@ -4922,17 +6361,9 @@ class ENS_AddNodeByEnglishSearch(Operator):
 
             return {"RUNNING_MODAL"}
 
-        if event.value == "PRESS" and event.type == "V" and (event.ctrl or event.oskey):
-            clipboard = getattr(context.window_manager, "clipboard", "")
-            if clipboard:
-                self._query += clipboard
-                self._selected_index = 0
-                self._scroll_offset = 0
-                self._hovered_result_index = None
-                self._keyboard_selection_active = False
-                self._refresh_results()
-                if context.area:
-                    context.area.tag_redraw()
+        if event.value == "PRESS" and self._handle_text_edit_key(context, event):
+            if context.area:
+                context.area.tag_redraw()
             return {"RUNNING_MODAL"}
 
         if event.value == "PRESS" and (event.ctrl or event.oskey or event.alt):
@@ -4949,13 +6380,8 @@ class ENS_AddNodeByEnglishSearch(Operator):
                 context.area.tag_redraw()
             return {"RUNNING_MODAL"}
 
-        if event.unicode and not event.ctrl and not event.alt and not event.oskey and event.type not in {"RET", "NUMPAD_ENTER", "ESC", "BACK_SPACE", "DEL"}:
-            self._query += event.unicode
-            self._selected_index = 0
-            self._scroll_offset = 0
-            self._hovered_result_index = None
-            self._keyboard_selection_active = False
-            self._refresh_results()
+        if event.unicode and not event.ctrl and not event.alt and not event.oskey and event.type not in {"RET", "NUMPAD_ENTER", "ESC", "BACK_SPACE", "DEL", "FORWARD_DEL", "LEFT_ARROW", "RIGHT_ARROW", "HOME", "END", "TAB"}:
+            self._insert_text(event.unicode)
             if context.area:
                 context.area.tag_redraw()
             return {"RUNNING_MODAL"}
@@ -4968,6 +6394,12 @@ class ENS_AddNodeByEnglishSearch(Operator):
                 self._scroll_results(amount)
                 if context.area:
                     context.area.tag_redraw()
+            return {"RUNNING_MODAL"}
+
+        if event.type == "LEFTMOUSE" and event.value == "RELEASE" and self._mouse_selecting:
+            self._mouse_selecting = False
+            if context.area:
+                context.area.tag_redraw()
             return {"RUNNING_MODAL"}
 
         if event.value == "PRESS":
@@ -5057,6 +6489,14 @@ class ENS_AddNodeByEnglishSearch(Operator):
                     self._close_context_menu()
                     return {"RUNNING_MODAL"}
 
+                if self._search_field_from_mouse(event):
+                    self._set_cursor_from_mouse(event)
+                    self._selection_anchor = self._cursor
+                    self._mouse_selecting = True
+                    if context.area:
+                        context.area.tag_redraw()
+                    return {"RUNNING_MODAL"}
+
                 if self._clear_button_from_mouse(event):
                     self._clear_query()
                     if context.area:
@@ -5119,6 +6559,11 @@ class ENS_AddNodeByEnglishSearch(Operator):
             return {"RUNNING_MODAL"}
 
         if event.type == "MOUSEMOVE":
+            if self._mouse_selecting:
+                self._set_cursor_from_mouse(event)
+                if context.area:
+                    context.area.tag_redraw()
+                return {"RUNNING_MODAL"}
             if self._context_menu_kind is not None:
                 old_hover = self._context_menu_hover
                 self._update_context_menu_hover(event)
@@ -5241,9 +6686,32 @@ class ENS_AddNodeByEnglishSearch(Operator):
             self._clear_button_rect = (0, 0, 0, 0)
             text_max_width = search_field_width - (text_x - (x + padding)) - _scaled(6, scale)
         text_y = input_text_y if self._query else placeholder_text_y
+        self._search_text_x = text_x
+        self._search_text_size = query_size
         _draw_text(_clip_text(query_text, text_max_width, query_size), text_x, text_y, query_size, query_color)
+        rng = self._selection_range()
+        if rng and self._query:
+            sel_start = _text_width(self._query[:rng[0]], query_size)
+            sel_end = _text_width(self._query[:rng[1]], query_size)
+            sel_x = text_x + sel_start
+            sel_w = min(sel_end - sel_start, max(0, text_max_width - sel_start))
+            if sel_w > 0:
+                prev_blend = None
+                try:
+                    prev_blend = gpu.state.blend_get()
+                    gpu.state.blend_set("ALPHA")
+                except Exception:
+                    prev_blend = None
+                _draw_rect(sel_x, search_y + _scaled(4, scale), sel_w, search_height - _scaled(8, scale), (0.24, 0.47, 0.85, 0.55))
+                if prev_blend is not None:
+                    try:
+                        gpu.state.blend_set(prev_blend)
+                    except Exception:
+                        pass
+
         if int(time.monotonic() * 2) % 2 == 0:
-            cursor_x = query_x + min(_text_width(self._query, query_size), text_max_width) + _scaled(2, scale)
+            prefix_width = _text_width(self._query[:self._cursor], query_size) if self._query else 0.0
+            cursor_x = text_x + min(prefix_width, text_max_width) + _scaled(1, scale)
             _draw_rect(cursor_x, search_y + _scaled(5, scale), max(1, _scaled(1, scale)), search_height - _scaled(10, scale), TEXT_COLOR)
         if self._query:
             _draw_rounded_rect(clear_x, clear_y, clear_size, clear_size, clear_size / 2, (0.235, 0.235, 0.25, 0.86))
@@ -5629,7 +7097,7 @@ class ENS_AddonPreferences(AddonPreferences):
     chinese_fuzzy_match: BoolProperty(
         name="Enable Chinese Fuzzy Match",
         description="Allow sparse Chinese/pinyin matching such as '设置法向' matching '设置曲线法向'. May make searching slightly slower.",
-        default=False,
+        default=True,
         update=_preference_changed,
     )
     shortcut_key: EnumProperty(
@@ -6258,6 +7726,8 @@ def register():
 def unregister():
     global BACKGROUND_ASSET_INDEX
     BACKGROUND_ASSET_INDEX = None
+    FADE_BATCH_CACHE.clear()
+    RECT_BATCH_CACHE.clear()
     unregister_keymap()
 
     for cls in reversed(classes):
